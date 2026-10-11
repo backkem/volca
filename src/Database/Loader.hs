@@ -154,8 +154,11 @@ import Database.CrossLinking (
     LinkingContext (..),
     SupplierEntry (..),
     SupplierQuery (..),
+    UnitBridge (..),
     WasteTreatmentMatch (..),
+    aliasApplies,
     defaultLinkingThreshold,
+    designatesProcess,
     emptyAliasMap,
     extractBracketedLocation,
     findSupplierByActivityProduct,
@@ -575,6 +578,9 @@ History of manual bumps:
 - 56: an EcoSpold 2 relation is read in the format's own formula language.
      Nothing changes type, so a cache written just before this would keep
      the old count of relations evaluated, divergent and refused.
+- 57: LinkBlocker gained AliasConflict (relink-mapping rows that disagree on
+     one demand) and AliasDeclined (a row naming no supplier), which the
+     cached linking stats can carry.
 
 The signature is stored inside the cache file and checked on load.
 If it doesn't match, the cache is automatically invalidated and rebuilt.
@@ -582,7 +588,7 @@ If it doesn't match, the cache is automatically invalidated and rebuilt.
 schemaSignature :: Word64
 schemaSignature =
     let Fingerprint hi lo = typeRepFingerprint (typeRep (Proxy :: Proxy Database))
-     in hi `xor` lo `xor` 56
+     in hi `xor` lo `xor` 57
 
 {- |
 Helper function to parse UUID from Text with deterministic UUID generation fallback.
@@ -2498,19 +2504,23 @@ mkGapEdge ::
 mkGapEdge db stats actUUID prodUUID ex = case ex of
     TechnosphereExchange{} ->
         let name = flowNameOr tfName (sdbTechFlows db)
-            reason
-                | claimsAnActivityUUID (exchangeSupplierClaim ex) = GapDanglingIdentity
-                | otherwise = GapBlocked (reasonsFor (supplierRequest name (exchangeSupplierClaim ex) (techLocation ex)))
+            -- An input naming its supplier by identity has a refusal on
+            -- record only where a mapping row spoke for it: that refusal is
+            -- the reason. Otherwise the identity simply answers nowhere.
+            reason = case recordedReasons (supplierRequest name (exchangeSupplierClaim ex) (techLocation ex)) of
+                Just reasons -> GapBlocked reasons
+                Nothing
+                    | claimsAnActivityUUID (exchangeSupplierClaim ex) -> GapDanglingIdentity
+                    | otherwise -> GapBlocked (NE.singleton (blockerReason NoNameMatch))
          in Just (edge name reason)
     WasteExchange{} -> Just (edge (flowNameOr wfName (sdbWasteFlows db)) GapWasteInput)
     BiosphereExchange{} -> Nothing
   where
     -- A name the linker never recorded a refusal for is a name it matched
     -- nowhere, which is what 'NoNameMatch' says.
-    reasonsFor :: SupplierRequest -> NE.NonEmpty BlockerReason
-    reasonsFor request =
-        fromMaybe (NE.singleton (blockerReason NoNameMatch)) $
-            NE.nonEmpty . map fst . reasonsOf . upBlockers =<< M.lookup request (cdlUnresolvedRequests stats)
+    recordedReasons :: SupplierRequest -> Maybe (NE.NonEmpty BlockerReason)
+    recordedReasons request =
+        NE.nonEmpty . map fst . reasonsOf . upBlockers =<< M.lookup request (cdlUnresolvedRequests stats)
     flowNameOr nameOf flows =
         maybe (UUID.toText (exchangeFlowId ex)) nameOf (M.lookup (exchangeFlowId ex) flows)
     edge name reason =
@@ -2714,15 +2724,15 @@ findExchangeCrossDBLink LinkScan{lsCtx = ctx, lsOwnKeys = ownKeys, lsTechFlows =
     loc = locationCode statedLoc
 
     resolvesInternally = maybe False (\supplier -> S.member (supplier, fid) ownKeys) linkId
-    mkTechLink supAct supProd supName supLoc srcDb tied flowUnitName =
+    mkTechLink supAct supProd supName supLoc srcDb tied (coefficient, exchangeUnit) =
         CrossDBLink
             { cdlConsumerActUUID = consumerActUUID
             , cdlConsumerProdUUID = consumerProdUUID
             , cdlConsumerFlowId = fid
             , cdlSupplierActUUID = supAct
             , cdlSupplierProdUUID = supProd
-            , cdlCoefficient = amt
-            , cdlExchangeUnit = flowUnitName
+            , cdlCoefficient = coefficient
+            , cdlExchangeUnit = exchangeUnit
             , cdlFlowName = supName
             , cdlLocation = supLoc
             , cdlSourceDatabase = srcDb
@@ -2731,7 +2741,10 @@ findExchangeCrossDBLink LinkScan{lsCtx = ctx, lsOwnKeys = ownKeys, lsTechFlows =
     resolveTechInput flow =
         let flowUnitName = maybe "" unitName (M.lookup (tfUnitId flow) unitDb)
             identityMatches = case claim of
-                ClaimById actUUID -> findSupplierByActivityProduct (lcIndexedDatabases ctx) actUUID fid
+                ClaimById actUUID
+                    -- A mapping row on this very process speaks first, even where a dependency still ships it.
+                    | designatesProcess ctx (ProcessRef actUUID fid) -> []
+                    | otherwise -> findSupplierByActivityProduct (lcIndexedDatabases ctx) actUUID fid
                 ClaimByProduct -> []
                 ClaimByName _ -> []
                 ClaimByDatasetNumber _ -> []
@@ -2745,7 +2758,7 @@ findExchangeCrossDBLink LinkScan{lsCtx = ctx, lsOwnKeys = ownKeys, lsTechFlows =
                                 (seLocation entry)
                                 srcDb
                                 (sort (map snd rest))
-                                flowUnitName
+                                (amt, flowUnitName)
                      in mempty{cdlLinks = [crossLink]}
                 [] -> attributeMatch flow flowUnitName
     supplierQuery :: TechnosphereFlow -> T.Text -> SupplierQuery
@@ -2755,67 +2768,88 @@ findExchangeCrossDBLink LinkScan{lsCtx = ctx, lsOwnKeys = ownKeys, lsTechFlows =
             , sqSupplierActivity = claimedName claim
             , sqLocation = loc
             , sqUnit = flowUnitName
+            , sqClaimedProcess = case claim of
+                ClaimById actUUID -> Just (ProcessRef actUUID fid)
+                ClaimByProduct -> Nothing
+                ClaimByName _ -> Nothing
+                ClaimByDatasetNumber _ -> Nothing
             }
+    {- What the link asks of its supplier: the exchange as written, or, where a
+    mapping row's conversion bridges two units that measure different things,
+    the amount in the row's source unit divided by what one target unit holds,
+    in the row's target unit. The matrix converts that unit to the supplier's. -}
+    bridgedAmount :: T.Text -> Maybe UnitBridge -> Maybe (Double, T.Text)
+    bridgedAmount flowUnitName = \case
+        Nothing -> Just (amt, flowUnitName)
+        Just UnitBridge{..} ->
+            (\inSource -> (inSource / ubTargetInSource, ubTargetUnit))
+                <$> UC.convertUnit (lcUnitConfig ctx) flowUnitName ubSourceUnit amt
     attributeMatch flow flowUnitName =
-        case findSupplierInIndexedDBs ctx (supplierQuery flow flowUnitName) of
-            result@CrossDBLinked{} ->
-                let !crossLink =
-                        mkTechLink
-                            (cdlrActivityUUID result)
-                            (cdlrProductUUID result)
-                            (cdlrProductName result)
-                            (cdlrLocation result)
-                            (cdlrDatabaseName result)
-                            (cdlrTiedDatabases result)
-                            flowUnitName
-                    locFallbacks =
-                        [ LocationFallback
-                            { lfProduct = cdlrProductName result
-                            , lfRequested = req
-                            , lfActual = actLoc
-                            , lfKind = kind
-                            }
-                        | UpperLocationUsed req actLoc kind <- cdlrWarnings result
-                        ]
-                    -- Non-nil input matched only by attributes: its named source
-                    -- activity was in no dependency – flag the cross-version risk.
-                    attrFallbacks =
-                        [ AttributeFallback
-                            { afProduct = tfName flow
-                            , afRequested = loc
-                            , afMatched = cdlrLocation result
-                            , afSourceDatabase = cdlrDatabaseName result
-                            }
-                        | claimsAnActivityUUID claim
-                        ]
-                    -- Several activities of the supplier database answered this
-                    -- input equally well: the winner is the ranking's, not the
-                    -- data's.
-                    ambiguities =
-                        [ SupplierAmbiguity
-                            { saProduct = tfName flow
-                            , saRequested = loc
-                            , saChosen = chosen
-                            , saCandidates = candidates
-                            , saSourceDatabase = cdlrDatabaseName result
-                            }
-                        | AmbiguousSupplier chosen candidates <- cdlrWarnings result
-                        ]
-                 in mempty
-                        { cdlLinks = [crossLink]
-                        , cdlLocationFallbacks = locFallbacks
-                        , cdlAttributeFallbacks = attrFallbacks
-                        , cdlSupplierAmbiguities = ambiguities
-                        }
-            CrossDBNotLinked blocker
-                -- An input designating by its product row reports a rich blocker;
-                -- one that named an identity and matched nothing (no identity, no
-                -- attribute match) is left for the dangling scan. An input of zero
-                -- is linked when a supplier answers it, but one that finds none
-                -- leaves no demand unmet ('isSupplierDemand').
-                | claimsAnActivityUUID claim -> mempty
-                | not (isSupplierDemand ex) -> mempty
-                | otherwise -> unresolvedStats flow blocker
+        let query = supplierQuery flow flowUnitName
+         in case findSupplierInIndexedDBs ctx query of
+                result@CrossDBLinked{}
+                    | Nothing <- bridgedAmount flowUnitName (cdlrBridge result) ->
+                        -- The row's units passed the matcher, so this is a unit the
+                        -- conversion table cannot read: refused, never guessed.
+                        unresolvedStats flow UnitIncompatible{uiQueryUnit = flowUnitName, uiSupplierUnit = maybe "" ubTargetUnit (cdlrBridge result)}
+                    | Just amount <- bridgedAmount flowUnitName (cdlrBridge result) ->
+                        let !crossLink =
+                                mkTechLink
+                                    (cdlrActivityUUID result)
+                                    (cdlrProductUUID result)
+                                    (cdlrProductName result)
+                                    (cdlrLocation result)
+                                    (cdlrDatabaseName result)
+                                    (cdlrTiedDatabases result)
+                                    amount
+                            locFallbacks =
+                                [ LocationFallback
+                                    { lfProduct = cdlrProductName result
+                                    , lfRequested = req
+                                    , lfActual = actLoc
+                                    , lfKind = kind
+                                    }
+                                | UpperLocationUsed req actLoc kind <- cdlrWarnings result
+                                ]
+                            -- Non-nil input matched only by attributes: its named source
+                            -- activity was in no dependency – flag the cross-version risk.
+                            attrFallbacks =
+                                [ AttributeFallback
+                                    { afProduct = tfName flow
+                                    , afRequested = loc
+                                    , afMatched = cdlrLocation result
+                                    , afSourceDatabase = cdlrDatabaseName result
+                                    }
+                                | claimsAnActivityUUID claim
+                                ]
+                            -- Several activities of the supplier database answered this
+                            -- input equally well: the winner is the ranking's, not the
+                            -- data's.
+                            ambiguities =
+                                [ SupplierAmbiguity
+                                    { saProduct = tfName flow
+                                    , saRequested = loc
+                                    , saChosen = chosen
+                                    , saCandidates = candidates
+                                    , saSourceDatabase = cdlrDatabaseName result
+                                    }
+                                | AmbiguousSupplier chosen candidates <- cdlrWarnings result
+                                ]
+                         in mempty
+                                { cdlLinks = [crossLink]
+                                , cdlLocationFallbacks = locFallbacks
+                                , cdlAttributeFallbacks = attrFallbacks
+                                , cdlSupplierAmbiguities = ambiguities
+                                }
+                CrossDBNotLinked blocker
+                    -- An input designating by its product row reports a rich blocker;
+                    -- one that named an identity and matched nothing (no identity, no
+                    -- attribute match) is left for the dangling scan. An input of zero
+                    -- is linked when a supplier answers it, but one that finds none
+                    -- leaves no demand unmet ('isSupplierDemand').
+                    | claimsAnActivityUUID claim && not (aliasApplies ctx query) -> mempty
+                    | not (isSupplierDemand ex) -> mempty
+                    | otherwise -> unresolvedStats flow blocker
     unresolvedStats flow blocker =
         let unresolved = case blocker of
                 LocationRejectedByPolicy{lrRequested = req, lrBestCandidate = actLoc, lrBestKind = kind} ->
@@ -2835,6 +2869,8 @@ findExchangeCrossDBLink LinkScan{lsCtx = ctx, lsOwnKeys = ownKeys, lsTechFlows =
                 NoNameMatch -> []
                 UnitIncompatible{} -> []
                 AliasTargetMissing{} -> []
+                AliasConflict{} -> []
+                AliasDeclined -> []
          in mempty
                 { cdlUnresolvedRequests = M.singleton (supplierRequest (tfName flow) claim statedLoc) (UnresolvedProduct (M.singleton blocker 1))
                 , cdlLocationUnresolved = unresolved

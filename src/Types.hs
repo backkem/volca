@@ -2066,6 +2066,12 @@ data LinkBlocker
       designation must fail loudly, never fall back to the generic cascade.
       -}
       AliasTargetMissing !Text !(Maybe Text)
+    | {- | The targets relink-mapping rows gave one demand's key, which disagree:
+      the matcher reports them rather than choosing one.
+      -}
+      AliasConflict ![Text]
+    | -- | A relink-mapping row named this demand and no supplier: the curator declined its link.
+      AliasDeclined
     deriving (Show, Eq, Ord, Generic, NFData, Store)
 
 {- | A physical property of a product, which shares can be divided on.
@@ -2610,6 +2616,9 @@ blockerReason blocker = case blocker of
         BlockerReason "location_rejected" (Just (req <> " ↛ " <> act <> " (" <> locationKindCode kind <> ")"))
     AliasTargetMissing name mLoc ->
         BlockerReason "alias_target_missing" (Just (name <> maybe "" (" @ " <>) mLoc))
+    AliasConflict targets ->
+        BlockerReason "alias_conflict" (Just (T.intercalate " | " targets))
+    AliasDeclined -> BlockerReason "alias_declined" Nothing
 
 {- | What a tally of refusals amounts to: one reason per wire code, each
 carrying the demands it refused, biggest first.
@@ -2961,7 +2970,10 @@ data CrossDBLink = CrossDBLink
     , cdlCoefficient :: !Double
     -- ^ Amount consumed per unit output of consumer
     , cdlExchangeUnit :: !Text
-    -- ^ Consumer's exchange unit (converted to supplier refUnit at matrix-build time)
+    {- ^ Unit of the coefficient: the consumer's exchange unit, or the target
+    unit of the relink-mapping row whose conversion bridged two measures.
+    Converted to the supplier's refUnit at matrix-build time.
+    -}
     , cdlFlowName :: !Text
     -- ^ Product name (for display/debugging)
     , cdlLocation :: !Text
