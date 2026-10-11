@@ -25,6 +25,7 @@ import Types (
     Medium (..),
  )
 import qualified Types as VT
+import UnitConversion (defaultUnitConfig)
 
 mkUUID :: Integer -> UUID
 mkUUID n = UUID.fromWords64 (fromIntegral n) 0
@@ -76,7 +77,7 @@ perUnitTables :: MethodTables
 perUnitTables =
     buildMethodTables
         mempty
-        mempty
+        defaultUnitConfig
         M.empty
         [ (mkCF 1 "Gas, natural/kg" "kg" 43.1, Just (Resolution kgFlow ByUUID))
         , (mkCF 20 "Gas, natural/m3" "m3" 34.5, Just (Resolution m3Flow ByName))
@@ -100,7 +101,7 @@ spec = describe "per-unit method rows (unit-suffixed homonyms)" $ do
         let baseOnly =
                 buildMethodTables
                     mempty
-                    mempty
+                    defaultUnitConfig
                     M.empty
                     [(mkCF 1 "Gas, natural" "m3" 40.0, Just (Resolution (mkFlow 1 "Gas, natural") ByUUID))]
         lookupFor baseOnly (mkFlow 4 "Gas, natural/Sm3") `shouldBe` Just 40.0
@@ -109,7 +110,7 @@ spec = describe "per-unit method rows (unit-suffixed homonyms)" $ do
         let dup =
                 buildMethodTables
                     mempty
-                    mempty
+                    defaultUnitConfig
                     M.empty
                     [ (mkCF 1 "Gas, natural/kg" "kg" 10.0, Just (Resolution kgFlow ByUUID))
                     , (mkCF 2 "Gas, natural/kg" "kg" 20.0, Nothing)
@@ -131,7 +132,7 @@ spec = describe "per-unit method rows (unit-suffixed homonyms)" $ do
         let subExact =
                 buildMethodTables
                     mempty
-                    mempty
+                    defaultUnitConfig
                     M.empty
                     [ (mkCF 1 "Gas, natural/m3" "m3" 34.5, Nothing)
                     , (inSub "in water" (mkCF 2 "Gas, natural" "kg" 43.1), Nothing)
@@ -142,7 +143,7 @@ spec = describe "per-unit method rows (unit-suffixed homonyms)" $ do
         let silent =
                 buildMethodTables
                     mempty
-                    mempty
+                    defaultUnitConfig
                     M.empty
                     [(mkCF 1 "Water/m3" "m3" 42.95, Nothing)]
         lookupFor silent (mkFlowAt 6 "Water/m3" (Just "ocean")) `shouldBe` Just 42.95
