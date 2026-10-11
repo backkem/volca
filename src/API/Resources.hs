@@ -663,8 +663,10 @@ description r = case r of
         \another one), 'cas_number' (a factor for the same substance by CAS), \
         \'region_base_name' (the base substance, the name's \
         \region suffix being untagged by the method), 'energy_content' (what \
-        \the method charges for a unit of energy, applied to the content the \
-        \flow's own name states), 'ore_base_element' (the base element of a \
+        \the method charges for a unit of energy, or failing that its factor \
+        \for the carrier's family by the mass over the family's energy \
+        \content, applied to the content the flow's own name states), \
+        \'ore_base_element' (the base element of a \
         \graded ore). \
         \'steps_tried' lists the rungs tried before that one. \
         \'match.unitConversion' names the \

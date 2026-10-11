@@ -151,12 +151,24 @@ spec = do
         it "spells out the energy content that bridges the units" $
             renderResolution
                 ( Characterized
-                    (matchIn "MJ" RungEnergyResource (Just ByName))
+                    -- The method's price is a line written per unit of energy.
+                    (CFMatch RungEnergyResource (CF 29.8 (CFUnit "MJ")) (BuildProvenance (Just ByName) (cfLine "Methane, fossil" "" "MJ" 29.8)))
                     (EnergyBridged (EnergyDensity 18.0 "MJ" "kg") DensityForward)
                 )
                 `shouldBe` [ "No factor carries this flow's name. The flow is an extracted energy carrier and its name states its energy content, so what the method charges for one unit of energy, from \"Methane, fossil\", applies to that content."
                            , "This flow holds 18.0 MJ per kg, which carries the amount from kg to MJ."
                            , "The factor applied is 29.8 per MJ."
+                           ]
+
+        it "says a family's factor was turned into a price per unit of energy" $
+            renderResolution
+                ( Characterized
+                    (CFMatch RungEnergyResource (CF 8.5 (CFUnit "MJ")) (BuildProvenance (Just ByName) ((cfLine "Coal, brown" "" "kg" 80.0){mcfCompartment = Just (Compartment "resource" "in ground" "")})))
+                    (EnergyBridged (EnergyDensity 8.0 "MJ" "kg") DensityForward)
+                )
+                `shouldBe` [ "No factor carries this flow's name, and the method charges nothing per unit of energy. The flow is an extracted energy carrier and its name states its energy content, so the factor of its family, \"Coal, brown\" at 80.0 per kg, divided by the energy a kg of that family holds, gives what one unit of energy costs, and that applies to the content."
+                           , "This flow holds 8.0 MJ per kg, which carries the amount from kg to MJ."
+                           , "The factor applied is 8.5 per MJ."
                            ]
 
         -- A method loaded from ILCD writes its factor in the result expression
