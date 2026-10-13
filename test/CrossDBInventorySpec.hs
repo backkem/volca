@@ -35,9 +35,9 @@ import SharedSolver (
  )
 import qualified SharedSolver
 import Test.Hspec
-import TestHelpers (loadSampleDatabase)
+import TestHelpers (loadSampleDatabase, unitDef)
 import Types
-import UnitConversion (defaultUnitConfig)
+import UnitConversion (defaultDimensionOrder, defaultUnitConfig, mkUnitConfig)
 
 spec :: Spec
 spec = do
@@ -68,7 +68,7 @@ spec = do
             db <- loadSampleDatabase "SAMPLE.min3"
             let n = fromIntegral (dbActivityCount db) :: Int
                 fakeSupplier = (UUID.nil, UUID.nil)
-                demands = M.singleton fakeSupplier (42.0, "kg")
+                demands = M.singleton fakeSupplier StatedAmount{saUnit = "kg", saAmount = 42.0}
             case depDemandsToVector defaultUnitConfig "SAMPLE.min3" db demands of
                 Right (Demand vec) -> do
                     U.length vec `shouldBe` n
@@ -80,10 +80,21 @@ spec = do
             case firstActivityWithRefUnit db of
                 Nothing -> pendingWith "SAMPLE.min3 has no activity with a reference output unit"
                 Just (supplierKey, supplierIdx, refUnit) -> do
-                    let demands = M.singleton supplierKey (7.5, refUnit)
+                    let demands = M.singleton supplierKey StatedAmount{saUnit = refUnit, saAmount = 7.5}
                     case depDemandsToVector defaultUnitConfig "SAMPLE.min3" db demands of
                         Right (Demand vec) -> vec U.! supplierIdx `shouldBe` 7.5
                         Left err -> expectationFailure (T.unpack err)
+
+        it "converts an amount stated in grams to the supplier's kilograms" $ do
+            db <- loadSampleDatabase "SAMPLE.min3"
+            case firstActivityWithRefUnit db of
+                Just (supplierKey, supplierIdx, "kg") -> do
+                    let demands = M.singleton supplierKey StatedAmount{saUnit = "g", saAmount = 1000.0}
+                        withGrams = mkUnitConfig defaultDimensionOrder (M.fromList [("kg", unitDef "mass" 1), ("g", unitDef "mass" 0.001)])
+                    case depDemandsToVector withGrams "SAMPLE.min3" db demands of
+                        Right (Demand vec) -> vec U.! supplierIdx `shouldBe` 1.0
+                        Left err -> expectationFailure (T.unpack err)
+                _ -> pendingWith "SAMPLE.min3 has no activity whose reference output is in kg"
 
         it "fails hard when the unit pair is unknown" $ do
             db <- loadSampleDatabase "SAMPLE.min3"
@@ -91,7 +102,7 @@ spec = do
                 Nothing -> pendingWith "SAMPLE.min3 has no activity with a reference output unit"
                 Just (supplierKey, _, refUnit) -> do
                     let bogusUnit = refUnit <> "__no_conversion__"
-                        demands = M.singleton supplierKey (1.0, bogusUnit)
+                        demands = M.singleton supplierKey StatedAmount{saUnit = bogusUnit, saAmount = 1.0}
                     case depDemandsToVector defaultUnitConfig "dep-test" db demands of
                         Right _ -> expectationFailure "expected Left for unknown unit pair"
                         Left err -> do
@@ -115,8 +126,8 @@ spec = do
                 Nothing -> pendingWith "SAMPLE.min3 has no activity with a reference output unit"
                 Just (supplierKey, supplierIdx, refUnit) -> do
                     -- Two roots: the first demands of another dep, the second of this one.
-                    let otherDep = M.singleton "some-other-db" (M.singleton supplierKey (7.5, refUnit))
-                        thisDep = M.singleton "SAMPLE.min3" (M.singleton supplierKey (7.5, refUnit))
+                    let otherDep = M.singleton "some-other-db" (M.singleton supplierKey StatedAmount{saUnit = refUnit, saAmount = 7.5})
+                        thisDep = M.singleton "SAMPLE.min3" (M.singleton supplierKey StatedAmount{saUnit = refUnit, saAmount = 7.5})
                     case SharedSolver.prepareDepDemandVecs defaultUnitConfig "SAMPLE.min3" db [otherDep, thisDep] of
                         Right [Demand absent, Demand present] -> do
                             U.all (== 0.0) absent `shouldBe` True
