@@ -9,10 +9,12 @@ name (the common case: running a script from a source checkout that has a
 from __future__ import annotations
 
 import io
+import subprocess
 from pathlib import Path
 from unittest import mock
 
 import pytest
+import requests
 
 from volca import _download
 from volca.server import Server
@@ -178,3 +180,25 @@ def test_start_reports_early_engine_exit_with_config_hint(monkeypatch):
     with mock.patch("volca.server.subprocess.Popen", return_value=process):
         with pytest.raises(RuntimeError, match="engine >= v0.9.3"):
             srv.start(wait_timeout=5)
+
+
+def test_stop_survives_an_engine_slow_to_answer_shutdown():
+    """A shutdown request that times out still stops the process, without raising."""
+    process = mock.Mock()
+    process.wait.side_effect = [subprocess.TimeoutExpired("volca", 10), 0]
+    srv = Server(config="absent.toml")
+    srv._process = process
+    with mock.patch("volca.server.requests.post", side_effect=requests.ReadTimeout):
+        srv.stop()
+
+    process.terminate.assert_called_once()
+    process.kill.assert_called_once()
+    assert srv._process is None
+
+
+def test_stop_reports_an_engine_it_did_not_start_still_running():
+    """A slow shutdown of an engine someone else started is not hidden: it keeps running."""
+    srv = Server(config="absent.toml")
+    with mock.patch("volca.server.requests.post", side_effect=requests.ReadTimeout), \
+         pytest.raises(requests.ReadTimeout):
+        srv.stop()

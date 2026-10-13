@@ -283,9 +283,19 @@ class Server:
             )
         except requests.ConnectionError:
             pass
+        except requests.RequestException:
+            # an engine of ours that does not answer in time is stopped below all the
+            # same, and raising would throw away the caller's finished work; one we
+            # did not start would keep running, which the caller must hear
+            if self._process is None:
+                raise
         if self._process:
             self._process.terminate()
-            self._process.wait(timeout=10)
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=10)
             self._process = None
 
     def __enter__(self) -> "Server":
