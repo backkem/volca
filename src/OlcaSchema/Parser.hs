@@ -359,9 +359,6 @@ environment globals p = (settled, [Unsettled (P.prName p <> " · " <> name <> ":
     own :: [P.Parameter]
     own = M.elems (byName (P.prParameters p))
 
-    byName :: [P.Parameter] -> M.Map Text P.Parameter
-    byName qs = M.fromList [(T.toLower (P.paName q), q) | q <- qs]
-
     given :: [P.Parameter] -> M.Map Text Double
     given qs = M.fromList [(T.toLower (P.paName q), v) | q <- qs, P.InputValue v <- [P.paValue q]]
 
@@ -376,6 +373,10 @@ environment globals p = (settled, [Unsettled (P.prName p <> " · " <> name <> ":
     globalUnsettled, ownUnsettled :: [(Text, Expr.Unsettled)]
     (globalValues, globalUnsettled) = Expr.settle Expr.OpenLca (given globals') (calculated globals')
     (settled, ownUnsettled) = Expr.settle Expr.OpenLca (M.union (given own) global) (calculated own)
+
+-- | Parameters by name, case aside: a process's own shadows a global one so.
+byName :: [P.Parameter] -> M.Map Text P.Parameter
+byName qs = M.fromList [(T.toLower (P.paName q), q) | q <- qs]
 
 {- | A product a process lists on several lines is one output of their sum,
 on the first of them, as openLCA adds them up; it is the reference if any
@@ -579,13 +580,24 @@ assemble cx p env notices lines' =
                 ref <- find (P.rxReference . lnRaw) lines'
                 unitName <$> M.lookup (lnUnit ref) (alUnitDB (cxAllocating cx))
             , exchanges = map fst built
-            , activityParams = env
-            , activityParamExprs = M.fromList [(P.paName q, f) | q <- P.prParameters p, P.Calculated f _ <- [P.paValue q]]
+            , activityParameters =
+                M.fromList $
+                    [(P.paName q, parameter q) | q <- M.elems own]
+                        <> [(P.paName q, InputParameter v) | q <- M.elems (byName (P.pkGlobals (cxPackage cx)) M.\\ own), Just v <- [M.lookup (T.toLower (P.paName q)) env]]
             , activityNativeType = Nothing
             , activityNativeId = Nothing
             , activityFormulaCheck = formulaCheck lines'
             , activityDates = noDates
             }
+
+    -- The package's globals are the process's values only: their formulas are no formula of this process.
+    own :: M.Map Text P.Parameter
+    own = byName (P.prParameters p)
+
+    parameter :: P.Parameter -> Parameter
+    parameter q = case P.paValue q of
+        P.InputValue value -> InputParameter value
+        P.Calculated formula stored -> CalculatedParameter formula (Just (M.findWithDefault stored (T.toLower (P.paName q)) env))
 
     -- A process the gate will refuse for having no reference keeps its own id as its product.
     referenceFlow :: Activity -> UUID
@@ -667,6 +679,7 @@ engineExchange cx p shares ln = case (P.flType flow, P.rxSide raw) of
             , bioLocation = location
             , bioComment = P.rxDescription raw
             , bioPedigree = Nothing
+            , bioFormula = Nothing
             }
 
     technosphere :: TechRole -> Double -> Supplier -> Maybe DeclaredShare -> Exchange
@@ -681,6 +694,7 @@ engineExchange cx p shares ln = case (P.flType flow, P.rxSide raw) of
             , techLocation = location
             , techComment = P.rxDescription raw
             , techPedigree = Nothing
+            , techFormula = Nothing
             , techShare = share
             , techClassification = M.empty
             , techProperties = noProperties
@@ -712,6 +726,7 @@ engineExchange cx p shares ln = case (P.flType flow, P.rxSide raw) of
             , waLocation = location
             , waComment = P.rxDescription raw
             , waPedigree = Nothing
+            , waFormula = Nothing
             }
         , suNotices supplier
         )
