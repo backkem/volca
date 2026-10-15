@@ -1056,13 +1056,43 @@ data Parameter = Parameter
 
 -- | How a parameter gets its value.
 data ParameterDefinition
-    = -- | A value the dataset states.
-      InputParameter !Double
+    = -- | A value the dataset states, and how it may vary when the dataset says so.
+      InputParameter !Double !(Maybe Uncertainty)
     | {- | A formula over other parameters, in VoLCA's language, and its
       value at the dataset's defaults when the source states it or it evaluates.
       -}
       CalculatedParameter !Text !(Maybe Double)
     deriving (Eq, Show, Generic, NFData, Store)
+
+-- | The distribution a value is drawn from.
+data Uncertainty
+    = {- | Geometric mean and geometric standard deviation: a draw is the mean
+      times the deviation raised to a standard normal draw, so a negative mean
+      draws the opposite of a lognormal value.
+      -}
+      Lognormal !Double !Double
+    | -- | Mean and standard deviation.
+      Normal !Double !Double
+    | -- | Minimum, most likely value and maximum.
+      Triangular !Double !Double !Double
+    | -- | Minimum and maximum.
+      Uniform !Double !Double
+    deriving (Eq, Show, Generic, NFData, Store)
+
+{- | The distribution, when its numbers spread a value: finite, a deviation
+other than none, bounds on either side of the most likely value. A source
+leaves zeros in the cells of a spread nobody filled in.
+-}
+spreading :: Uncertainty -> Maybe Uncertainty
+spreading u
+    | all (\x -> not (isNaN x || isInfinite x)) numbers && spreads = Just u
+    | otherwise = Nothing
+  where
+    (numbers, spreads) = case u of
+        Lognormal m g -> ([m, g], m /= 0 && g > 0 && g /= 1)
+        Normal m s -> ([m, s], s > 0)
+        Triangular lo mode hi -> ([lo, mode, hi], lo <= mode && mode <= hi && lo < hi)
+        Uniform lo hi -> ([lo, hi], lo < hi)
 
 {- | Base LCA activity
 Note: ProcessId is the index in dbActivities vector, UUIDs stored in dbProcessIdTable
