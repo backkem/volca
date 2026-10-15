@@ -29,6 +29,7 @@ import Types (
     NativeProcessId (..),
     Pedigree,
     UUID,
+    Uncertainty,
     Unit,
     WasteRole (..),
  )
@@ -527,11 +528,25 @@ data ActivityForAPI = ActivityForAPI
     , pfaAllProducts :: [ActivitySummary] -- All products from same activityUUID
     , pfaExchanges :: [ExchangeWithUnit] -- Exchanges with unit names
     , pfaNativeType :: Maybe NativeActivityType -- Source-native activity type
-    , pfaWithheld :: Maybe WithheldExchanges -- Set when the licence keeps the amounts to itself: then the exchanges are empty, and these name them
+    , pfaWithheld :: Maybe WithheldExchanges -- Set when the licence keeps the amounts to itself: then the exchanges and both parameter lists are empty, and these name the exchanges
+    , pfaParameters :: [ParameterAPI] -- The names its formulas read that the process defines itself
+    , pfaDatabaseParameters :: [ParameterAPI] -- The names its formulas read from its database, those the process does not define
     , pfaNativeId :: Maybe NativeProcessId -- The identifier the source gave the dataset block this came out of (SimaPro's "Process identifier", EcoSpold 1's dataset number); Nothing when the format has none, and when the format's identifier is the activity UUID the process id already spells
     }
     deriving (Generic)
     deriving (ToJSON, FromJSON, ToSchema) via (Stripped ActivityForAPI)
+
+-- | A parameter: its value at the dataset's defaults, the formula giving it when it is calculated, how it may vary when it is an input.
+data ParameterAPI = ParameterAPI
+    { prmName :: Text
+    , prmValue :: Maybe Double -- Nothing for a calculated parameter whose formula gives none
+    , prmFormula :: Maybe Text -- In VoLCA's formula language; Nothing for an input parameter
+    , prmUnit :: Maybe Text -- As the source spells it
+    , prmDescription :: Text
+    , prmUncertainty :: Maybe Uncertainty -- An input parameter's only: a calculated one varies with what it reads
+    }
+    deriving (Generic)
+    deriving (ToJSON, FromJSON, ToSchema) via (Stripped ParameterAPI)
 
 -- | Streamlined activity information - core data only
 data ActivityInfo = ActivityInfo

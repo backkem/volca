@@ -5,7 +5,7 @@
 
 module Service where
 
-import API.Types (ActivityForAPI (..), ActivityInfo (..), ActivityLinks (..), ActivityMetadata (..), ActivityStats (..), ActivitySummary (..), ApiFlow (..), ClassificationSystem (..), ConsumerResult (..), ConsumersResponse (..), CutoffWasteFlow (..), EdgeType (..), ExchangeDetail (..), ExchangeName (..), ExchangeWithUnit (..), ExportNode (..), FlowDetail (..), FlowInfo (..), FlowRole (..), FlowSearchResult (..), FlowSummary (..), GraphEdge (..), GraphExport (..), GraphNode (..), InventoryExport (..), InventoryFlowDetail (..), InventoryMetadata (..), InventoryStatistics (..), LCIABatchResult (..), LCIAResult (..), NodeType (..), Perturbation (..), ProducerFilter (..), RootDb (..), SearchResults (..), Substitution (..), SubstitutionScope (..), SupplyChainEdge (..), SupplyChainEntry (..), SupplyChainResponse (..), ThisDb (..), TreeEdge (..), TreeExport (..), TreeMetadata (..), WithheldExchanges (..), WithheldInput (..), WithheldProcesses (..), WithheldShare (..), apiFlowOfKind, parseSubRef, subAnchorRef, unresolvedFlowName)
+import API.Types (ActivityForAPI (..), ActivityInfo (..), ActivityLinks (..), ActivityMetadata (..), ActivityStats (..), ActivitySummary (..), ApiFlow (..), ClassificationSystem (..), ConsumerResult (..), ConsumersResponse (..), CutoffWasteFlow (..), EdgeType (..), ExchangeDetail (..), ExchangeName (..), ExchangeWithUnit (..), ExportNode (..), FlowDetail (..), FlowInfo (..), FlowRole (..), FlowSearchResult (..), FlowSummary (..), GraphEdge (..), GraphExport (..), GraphNode (..), InventoryExport (..), InventoryFlowDetail (..), InventoryMetadata (..), InventoryStatistics (..), LCIABatchResult (..), LCIAResult (..), NodeType (..), ParameterAPI (..), Perturbation (..), ProducerFilter (..), RootDb (..), SearchResults (..), Substitution (..), SubstitutionScope (..), SupplyChainEdge (..), SupplyChainEntry (..), SupplyChainResponse (..), ThisDb (..), TreeEdge (..), TreeExport (..), TreeMetadata (..), WithheldExchanges (..), WithheldInput (..), WithheldProcesses (..), WithheldShare (..), apiFlowOfKind, parseSubRef, subAnchorRef, unresolvedFlowName)
 import CLI.Types (DebugMatricesOptions (..))
 import Control.Applicative ((<|>))
 import Control.Concurrent.Async (mapConcurrently)
@@ -34,6 +34,7 @@ import Database (Geographies, IdentifierReach (..), activitiesIdentifiedBy, appl
 import Database.Allocation (asAllocated, describeRefusal, propertyShares)
 import Database.Cutoffs (Cutoffs (..), GapIndex, cutoffsOf, cutoffsReached, gapIndexOf)
 import Database.MatrixBuild (findProducer, linkedProducer)
+import Expr (Dialect (..), collectIdentifiers)
 import Impact (PartScore (..))
 import Matrix (Demand (..), DepDemands, Inventory, SupplierDemands, accumulateDepDemandsWith, activityNormalizationFactor, applyBiosphereMatrix, buildDemandVector, depDemandsToVector, inSupplierUnit, linkConsumer, perturbA, perturbABatch, perturbGlobal, processScaling, toList)
 import qualified Matrix.Export as MatrixExport
@@ -1203,12 +1204,57 @@ convertActivityForAPI db processId activity =
             , pfaExchanges = map (toExchangeWithUnit db linkMap) (exchanges activity)
             , pfaNativeType = activityNativeType activity
             , pfaWithheld = Nothing
+            , pfaParameters = parametersForAPI (activityParameters activity)
+            , pfaDatabaseParameters = parametersForAPI (databaseParametersRead activity (dbParameters db))
             , pfaNativeId = activityNativeId activity
             }
 
+{- | The database's parameters a process reads and does not define itself:
+those its exchange and parameter formulas name, and those the database's own
+calculated parameters name in turn. A process's definition of a name replaces
+its database's, whatever the case it is spelt in.
+-}
+databaseParametersRead :: Activity -> M.Map Text Parameter -> M.Map Text Parameter
+databaseParametersRead activity databaseWide =
+    M.fromList (M.elems (M.restrictKeys byName (reach S.empty (concatMap namesRead formulas))))
+  where
+    own :: M.Map Text Parameter
+    own = activityParameters activity
+    ownNames :: S.Set Text
+    ownNames = S.map T.toLower (M.keysSet own)
+    byName :: M.Map Text (Text, Parameter)
+    byName = M.fromList [(T.toLower name, (name, parameter)) | (name, parameter) <- M.toList databaseWide]
+    formulas :: [Text]
+    formulas = map efText (mapMaybe exchangeFormula (exchanges activity)) <> mapMaybe formulaOf (M.elems own)
+    formulaOf :: Parameter -> Maybe Text
+    formulaOf parameter = case parameterDefinition parameter of
+        CalculatedParameter formula _ -> Just formula
+        InputParameter{} -> Nothing
+    namesRead :: Text -> [Text]
+    namesRead = map T.toLower . collectIdentifiers Volca
+    reach :: S.Set Text -> [Text] -> S.Set Text
+    reach found = \case
+        [] -> found
+        name : rest
+            | S.member name found || S.member name ownNames -> reach found rest
+            | Just (_, parameter) <- M.lookup name byName -> reach (S.insert name found) (maybe [] namesRead (formulaOf parameter) <> rest)
+            | otherwise -> reach found rest
+
+-- | Parameters by name, as the API shows them.
+parametersForAPI :: M.Map Text Parameter -> [ParameterAPI]
+parametersForAPI = map shown . M.toList
+  where
+    shown :: (Text, Parameter) -> ParameterAPI
+    shown (name, Parameter{parameterDefinition = definition, parameterUnit = unit, parameterDescription = told}) =
+        let shell = ParameterAPI{prmName = name, prmValue = Nothing, prmFormula = Nothing, prmUnit = unit, prmDescription = told, prmUncertainty = Nothing}
+         in case definition of
+                InputParameter value spread -> shell{prmValue = Just value, prmUncertainty = spread}
+                CalculatedParameter formula value -> shell{prmValue = value, prmFormula = Just formula}
+
 {- | An activity as its database's licence lets it be read. Under a licence that
 keeps the amounts of its exchanges, the exchanges are named without them, which
-says what the process is made of without handing out the recipe. The reference
+says what the process is made of without handing out the recipe. Its
+parameters are left out too, since their values give the amounts away. The reference
 line is left out: the product names it already, and read as an input it would
 count a treatment's waste among what the process consumes.
 
@@ -1222,6 +1268,8 @@ withholdExchangeAmounts dbName licence info
             { piActivity =
                 activity
                     { pfaExchanges = []
+                    , pfaParameters = []
+                    , pfaDatabaseParameters = []
                     , pfaWithheld = Just (WithheldExchanges (withheldSentence dbName ReadInventory) (map exchangeNameOf (filter (not . exchangeIsReference . ewuExchange) (pfaExchanges activity))))
                     }
             }
