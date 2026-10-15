@@ -31,6 +31,13 @@
   the conversion written into its formula: `Qm * 0.001`. It is `null` for
   the other formats for now. Wire revision 64.
 
+- A SimaPro file's database and project parameters are kept once, for the
+  whole database, instead of being copied into each of its processes. Loading
+  a file warns when a project parameter replaces a database parameter of the
+  same name. Two spellings of one parameter name that differ only in case
+  are one parameter: the project's `DbIn` now replaces the database's
+  `dbin`, where an amount reading `dbin` could get the database's value.
+
 ### Fixed
 
 - Calculated parameters in SimaPro files and openLCA packages are given

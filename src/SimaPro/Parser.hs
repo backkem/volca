@@ -65,6 +65,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAlpha, isAlphaNum, isDigit, isUpper, toLower)
+import Data.Containers.ListUtils (nubOrd)
 import qualified Data.Csv as Csv
 import Data.Functor ((<&>))
 import Data.List (dropWhileEnd, sortOn)
@@ -1412,26 +1413,28 @@ groups in the order their parameters read each other, so one may depend on
 another defined later in the CSV. Groups are ordered low→high precedence:
 database, project, process. A calculated parameter without a value is left
 out of the environment, and an amount reading it is among the
-'fallbackAmounts'; an input whose value does not read is no parameter.
+'fallbackAmounts'; an input whose value does not read is no parameter. A
+name is one name whatever its case, as formulas read it, so a later spelling
+replaces an earlier one.
 -}
 buildParamEnv :: [[(Text, Text)]] -> [[(Text, Text)]] -> (M.Map Text Double, M.Map Text Parameter)
 buildParamEnv inputGroups calcGroups =
     ( env
-    , M.union calculated (M.fromList [(name, InputParameter value) | (name, _) <- concat inputGroups, Just value <- [M.lookup name inputs]])
+    , foldl' (flip (uncurry respell)) M.empty ([(name, InputParameter value) | (name, _) <- concat inputGroups, Just value <- [M.lookup name inputs]] ++ calculated)
     )
   where
     inputs :: M.Map Text Double
     inputs = foldl' (foldl' evalParam) M.empty inputGroups
 
-    (env, calculated) = foldl' settleGroup (inputs, M.empty) calcGroups
+    (env, calculated) = foldl' settleGroup (inputs, []) calcGroups
 
     -- A formula that does not settle has no value, not the one of the input it shadows.
-    settleGroup :: (M.Map Text Double, M.Map Text Parameter) -> [(Text, Text)] -> (M.Map Text Double, M.Map Text Parameter)
+    settleGroup :: (M.Map Text Double, [(Text, Parameter)]) -> [(Text, Text)] -> (M.Map Text Double, [(Text, Parameter)])
     settleGroup (known, parameters) group =
         let (known', refused) = Expr.settle Expr.SimaPro known group
             failed = S.fromList (map fst refused)
             value name = if S.member name failed then Nothing else M.lookup name known'
-         in (known', M.union (M.fromList [(name, p) | (name, formula) <- group, Just p <- [parameter formula (value name)]]) parameters)
+         in (known', parameters ++ [(name, p) | (name, formula) <- group, Just p <- [parameter formula (value name)]])
 
     -- A formula VoLCA's language cannot write leaves its value only.
     parameter :: Text -> Maybe Double -> Maybe Parameter
@@ -1439,18 +1442,41 @@ buildParamEnv inputGroups calcGroups =
 
     evalParam :: M.Map Text Double -> (Text, Text) -> M.Map Text Double
     evalParam acc (name, rawVal) =
-        either (const acc) (\v -> M.insert name v acc) (Expr.evaluate Expr.SimaPro acc rawVal)
+        either (const acc) (\v -> respell name v acc) (Expr.evaluate Expr.SimaPro acc rawVal)
 
--- | The parameter environment a block's amounts are evaluated in.
+-- | Bind a name, dropping the spellings of it that differ only in case.
+respell :: Text -> a -> M.Map Text a -> M.Map Text a
+respell name value = M.insert name value . M.filterWithKey (\other _ -> T.toLower other /= T.toLower name)
+
+{- | The parameter environment a block's amounts are evaluated in, and the
+parameters the block itself defines: the file's are the database's.
+-}
 blockParamEnv :: GlobalParams -> ProcessBlock -> (M.Map Text Double, M.Map Text Parameter)
 blockParamEnv GlobalParams{..} ProcessBlock{..} =
-    buildParamEnv
-        (reverse <$> [gpDbInput, gpProjInput, pbInputParams])
-        (reverse <$> [gpDbCalc, gpProjCalc, pbCalcParams])
+    (env, M.filterWithKey (\name _ -> S.member (T.toLower name) own) parameters)
+  where
+    own = S.fromList (map (T.toLower . fst) (pbInputParams ++ pbCalcParams))
+    (env, parameters) =
+        buildParamEnv
+            (reverse <$> [gpDbInput, gpProjInput, pbInputParams])
+            (reverse <$> [gpDbCalc, gpProjCalc, pbCalcParams])
+
+-- | The database and project parameters, a project one replacing the database one of its name.
+globalParameters :: GlobalParams -> M.Map Text Parameter
+globalParameters GlobalParams{..} =
+    snd (buildParamEnv (reverse <$> [gpDbInput, gpProjInput]) (reverse <$> [gpDbCalc, gpProjCalc]))
+
+-- | The names a project parameter takes from a database parameter.
+shadowedByProject :: GlobalParams -> [Text]
+shadowedByProject GlobalParams{..} =
+    nubOrd [name | (name, _) <- gpProjInput ++ gpProjCalc, S.member (T.toLower name) database]
+  where
+    database = S.fromList (map (T.toLower . fst) (gpDbInput ++ gpDbCalc))
 
 {- | Convert ProcessBlock to list of Activities (one per product)
 This matches EcoSpold behavior where multi-product processes create multiple activities
-Global params (db + project level) are passed in and combined with process-level params.
+Global params (db + project level) are passed in so the amounts read them; the
+activities keep only the block's own parameters.
 -}
 processBlockToActivity ::
     UnitConversion.UnitConfig ->
@@ -2213,6 +2239,7 @@ data SimaProFile = SimaProFile
     , spfWasteFlows :: !WasteFlowDB
     , spfUnits :: !UnitDB
     , spfDocumentation :: !DatabaseDocumentation
+    , spfParameters :: !(M.Map Text Parameter)
     }
 
 parseSimaProCSV :: UnitConversion.UnitConfig -> FilePath -> IO (Either Text SimaProFile)
@@ -2294,6 +2321,9 @@ parseSimaProCSV unitCfg path = do
     case indexed of
         Left err -> pure (Left err)
         Right (techFlowDB, (bioFlowDB, casConflicts), wasteFlowDB) -> do
+            forM_ (shadowedByProject (fgParams globals)) $ \name ->
+                reportProgress Warning $
+                    printf "project parameter '%s' replaces the database parameter of the same name" (T.unpack name)
             forM_ casConflicts $ \(NormName n, (CASNumber kept, CASNumber ignored)) ->
                 reportProgress Warning $
                     printf
@@ -2332,4 +2362,5 @@ parseSimaProCSV unitCfg path = do
                             , dbdocSystems = fgSystems globals
                             , dbdocLiterature = fgLiterature globals
                             }
+                    , spfParameters = globalParameters (fgParams globals)
                     }
