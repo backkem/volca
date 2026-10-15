@@ -173,7 +173,8 @@ import Database.Patch (applyExchangePatches, describeExchangePatch)
 import Database.Upload (listDirectoryRecursive)
 import EcoSpold.Common (ParsedDataset (..), distributeFiles)
 import EcoSpold.Parser1 (streamParseActivityAndFlowsFromFile1, streamParseAllDatasetsFromFile1)
-import EcoSpold.Parser2 (streamParseActivityAndFlowsFromFile)
+import EcoSpold.Parser2 (parseUnitConversions, streamParseActivityAndFlowsFromFile)
+import qualified Expr
 import GHC.Conc (getNumCapabilities)
 import GHC.Fingerprint (Fingerprint (..))
 import qualified ILCD.Parser as ILCD
@@ -184,7 +185,7 @@ import Progress
 import qualified SimaPro.Parser as SimaPro
 import SynonymDB (SynonymDB)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath (takeBaseName, takeDirectory, takeExtension, (</>))
+import System.FilePath (takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 import Text.Printf (printf)
 import Types
 import qualified UnitConversion as UC
@@ -596,6 +597,8 @@ History of manual bumps:
 - 62: EcoSpold 2 exchanges keep their formula and name, in VoLCA's language,
      as calculated parameters of every format now do; a named EcoSpold 2
      property is a parameter.
+- 63: an EcoSpold 2 formula calling @UnitConversion@ is read with the
+     package's own conversion factors, so more of them are kept.
 
 The signature is stored inside the cache file and checked on load.
 If it doesn't match, the cache is automatically invalidated and rebuilt.
@@ -603,7 +606,7 @@ If it doesn't match, the cache is automatically invalidated and rebuilt.
 schemaSignature :: Word64
 schemaSignature =
     let Fingerprint hi lo = typeRepFingerprint (typeRep (Proxy :: Proxy Database))
-     in hi `xor` lo `xor` 62
+     in hi `xor` lo `xor` 63
 
 {- |
 Helper function to parse UUID from Text with deterministic UUID generation fallback.
@@ -1605,6 +1608,15 @@ findFilesByExtRecursive :: String -> FilePath -> IO [FilePath]
 findFilesByExtRecursive ext =
     fmap (filter ((== ext) . map toLower . takeExtension)) . listDirectoryRecursive
 
+{- | The unit conversions an EcoSpold 2 package ships in its master data, which
+its formulas read. Without that file, or with tables that do not read, a
+formula calling @UnitConversion@ is left out like any other that does not read.
+-}
+readUnitConversions :: [FilePath] -> IO Expr.UnitConversions
+readUnitConversions files =
+    either (\reason -> M.empty <$ reportProgress Warning (intercalate ", " files ++ ": " ++ reason)) pure . parseUnitConversions
+        =<< mapM BS.readFile files
+
 -- | Load EcoSpold files from directory
 loadEcoSpoldDirectory :: LoadOptions -> FilePath -> IO (Either T.Text SimpleDatabase)
 loadEcoSpoldDirectory opts dir = do
@@ -1613,8 +1625,10 @@ loadEcoSpoldDirectory opts dir = do
     -- .spold datasets may live in a subdirectory (e.g. ecoinvent's datasets/),
     -- so find them recursively. .xml (EcoSpold1) stays top-level to avoid
     -- sweeping up MasterData/metadata XML that sits beside the datasets.
-    spold2Files <- findFilesByExtRecursive ".spold" dir
-    let spold1Files = [dir </> f | f <- files, map toLower (takeExtension f) == ".xml"]
+    entries <- listDirectoryRecursive dir
+    let spold2Files = filter ((== ".spold") . map toLower . takeExtension) entries
+        conversionFiles = filter ((== "unitconversions.xml") . map toLower . takeFileName) entries
+        spold1Files = [dir </> f | f <- files, map toLower (takeExtension f) == ".xml"]
 
     -- Determine which format to use based on what's found
     case (spold2Files, spold1Files) of
@@ -1625,19 +1639,19 @@ loadEcoSpoldDirectory opts dir = do
             loadSingleEcoSpold1File opts singleXml
         ([], xs) -> do
             reportProgress Info $ "Found " ++ show (length xs) ++ " EcoSpold1 (.XML) files for processing"
-            loadWithWorkerParallelism xs True
+            loadWithWorkerParallelism [] xs True
         (xs, []) -> do
             reportProgress Info $ "Found " ++ show (length xs) ++ " EcoSpold2 (.spold) files for processing"
-            loadWithWorkerParallelism xs False
+            loadWithWorkerParallelism conversionFiles xs False
         (xs, _) -> do
             reportProgress Info $ "Found " ++ show (length xs) ++ " EcoSpold2 (.spold) files for processing"
-            loadWithWorkerParallelism xs False -- Prefer EcoSpold2 if both present
+            loadWithWorkerParallelism conversionFiles xs False -- Prefer EcoSpold2 if both present
   where
     locationAliases :: MS.Map T.Text T.Text
     locationAliases = loLocationAliases opts
     -- Worker-based parallelism: divide files among N workers, all process in parallel
-    loadWithWorkerParallelism :: [FilePath] -> Bool -> IO (Either T.Text SimpleDatabase)
-    loadWithWorkerParallelism allFiles isEcoSpold1 = do
+    loadWithWorkerParallelism :: [FilePath] -> [FilePath] -> Bool -> IO (Either T.Text SimpleDatabase)
+    loadWithWorkerParallelism conversionFiles allFiles isEcoSpold1 = do
         -- Get actual number of CPU capabilities (respects +RTS -N)
         numWorkers <- getNumCapabilities
         let workers = distributeFiles numWorkers allFiles
@@ -1649,9 +1663,10 @@ loadEcoSpoldDirectory opts dir = do
                 (length allFiles `div` numWorkers)
 
         -- Process all workers in parallel
+        conversions <- readUnitConversions conversionFiles
         startTime <- getCurrentTime
         scoped <- inheritLogScope
-        results <- mapConcurrently (scoped . processWorker startTime isEcoSpold1) (zip [1 ..] workers)
+        results <- mapConcurrently (scoped . processWorker startTime isEcoSpold1 conversions) (zip [1 ..] workers)
 
         -- Every file no worker could turn into a dataset, in one message: the
         -- workers each hold a share of the directory, so what one of them
@@ -1697,8 +1712,8 @@ loadEcoSpoldDirectory opts dir = do
                         | otherwise -> return (Right simpleDb)
 
     -- Process one worker's share of files
-    processWorker :: UTCTime -> Bool -> (Int, [FilePath]) -> IO (Either (NE.NonEmpty T.Text) Harvest)
-    processWorker _startTime isEcoSpold1 (workerNum, workerFiles) = do
+    processWorker :: UTCTime -> Bool -> Expr.UnitConversions -> (Int, [FilePath]) -> IO (Either (NE.NonEmpty T.Text) Harvest)
+    processWorker _startTime isEcoSpold1 conversions (workerNum, workerFiles) = do
         workerStartTime <- getCurrentTime
         reportProgress Info $ printf "Worker %d started: processing %d files" workerNum (length workerFiles)
 
@@ -1708,7 +1723,7 @@ loadEcoSpoldDirectory opts dir = do
         let parseFile =
                 if isEcoSpold1
                     then streamParseActivityAndFlowsFromFile1
-                    else streamParseActivityAndFlowsFromFile
+                    else streamParseActivityAndFlowsFromFile conversions
         workerResults <- mapM parseFile workerFiles
         let paired = zipWith (\f -> either (Left . T.pack) (Right . (f,))) workerFiles workerResults
         let (unread, oks) = partitionEithers paired
