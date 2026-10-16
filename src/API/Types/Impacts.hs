@@ -6,11 +6,13 @@
 module API.Types.Impacts where
 
 import API.JsonOptions (Stripped (..))
+import API.Types.Activity (ParameterValue)
 import API.Types.Common
 import API.Types.MethodComparison
 import Control.DeepSeq (NFData)
 import Control.Lens ((&), (.~), (?~))
 import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.HashMap.Strict.InsOrd as InsOrdHashMap
 import qualified Data.Map as M
 import Data.OpenApi (NamedSchema (..), OpenApiType (..), ToSchema (..), declareSchemaRef, properties, required, type_)
@@ -164,17 +166,45 @@ data ContributingActivitiesResult = ContributingActivitiesResult
     deriving (Generic)
     deriving (ToJSON, ToSchema) via (Stripped ContributingActivitiesResult)
 
--- | Batch impacts request: compute LCIA for every process in one call.
-newtype BatchImpactsRequest = BatchImpactsRequest
+{- | Batch impacts request: compute LCIA for every process in one call, at
+the database's own values, or once at each set of parameter values.
+-}
+data BatchImpactsRequest = BatchImpactsRequest
     { birProcessIds :: [Text]
+    , birParameterSets :: [[ParameterValue]]
     }
     deriving (Generic)
-    deriving (FromJSON, ToSchema) via (Stripped BatchImpactsRequest)
+
+{- | Sets left unstated are none: the processes are scored at the database's
+own values. Any other field is refused, as 'API.JsonOptions.parseClosed' does:
+a misspelt @parameterSets@ would otherwise score the database's own values.
+-}
+instance FromJSON BatchImpactsRequest where
+    parseJSON = withObject "BatchImpactsRequest" $ \o ->
+        case filter (`notElem` ["processIds", "parameterSets"]) (KM.keys o) of
+            [] ->
+                BatchImpactsRequest
+                    <$> o .: "processIds"
+                    <*> o .:? "parameterSets" .!= []
+            unknown -> fail ("Unknown fields: " <> show unknown)
+
+instance ToSchema BatchImpactsRequest where
+    declareNamedSchema _ = do
+        processIds <- declareSchemaRef (Proxy :: Proxy [Text])
+        parameterSets <- declareSchemaRef (Proxy :: Proxy [[ParameterValue]])
+        pure $
+            NamedSchema (Just "BatchImpactsRequest") $
+                mempty
+                    & type_ ?~ OpenApiObject
+                    & properties .~ InsOrdHashMap.fromList [("processIds", processIds), ("parameterSets", parameterSets)]
+                    & required .~ ["processIds"]
 
 -- | One entry of a batch impacts response.
 data BatchImpactsEntry = BatchImpactsEntry
     { bieProcessId :: Text
     , bieActivityName :: Text
+    , bieParameterSet :: Maybe Int
+    -- ^ The position of the parameter set this entry was scored at, when the request gave sets
     , bieImpacts :: LCIABatchResult
     }
     deriving (Generic)
