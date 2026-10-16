@@ -30,6 +30,8 @@ module SharedSolver (
     -- * Cross-database back-substitution
     DepSolverLookup,
     CrossDBSolution (..),
+    Reached (..),
+    atZero,
     computeInventoryMatrixWithDepsCached,
     computeInventoryMatrixBatchWithDepsCached,
     goWithDeps,
@@ -218,17 +220,18 @@ Without per-DB scalings, dep-DB regional CFs are silently invisible
 (the merged 'Inventory' has the emissions but lost the per-activity
 location context the regional CF lookup needs).
 
-'csScalings' lists every DB visited (root first, then dep DBs in BFS
-order – both the order and the recursion depth follow the same dep-graph
-walk that built 'csInventory'). The list is non-empty: the root entry
-('rootDbName', root 'Database', root scaling) is always added by the
-top-level solve; dep entries are appended as the recursion fans out.
+'csScalings' lists every DB visited: root first, then each dep DB followed
+by the DBs it reached in turn, siblings in name order – both the order and
+the recursion depth follow the same dep-graph walk that built
+'csInventory'. The list is non-empty: the root's 'Reached' entry is always
+added by the top-level solve; dep entries are appended as the recursion
+fans out.
 A DB whose scaling vector is the zero vector for this pid is still
 included; the solver never silently omits a participating DB.
 -}
 data CrossDBSolution = CrossDBSolution
     { csInventory :: !Inventory
-    , csScalings :: !(NonEmpty (Text, Database, Vector))
+    , csScalings :: !(NonEmpty Reached)
     , csLongTerm :: !LongTermMode
     {- ^ The policy 'csInventory' was filtered under. A scaling vector cannot
     carry it, a column not being a flow, so a path that reads the vectors has
@@ -237,9 +240,24 @@ data CrossDBSolution = CrossDBSolution
     -}
     }
 
+-- | One database a cross-database solve reached, at the scaling the solve found for it.
+data Reached = Reached
+    { reachedName :: !Text
+    -- ^ the name the database is loaded under
+    , reachedDatabase :: !Database
+    , reachedScaling :: !Vector
+    -- ^ indexed by the activities of 'reachedDatabase'
+    }
+
+{- | The same database at a zero scaling: it keeps its place in a solution and
+adds nothing to it.
+-}
+atZero :: Reached -> Reached
+atZero r = r{reachedScaling = U.map (const 0) (reachedScaling r)}
+
 {- | Combine two cross-DB solutions: sum their inventories and concatenate
 their visited-DB scalings. Associative; folding from a base preserves the
-base-first, deps-in-order BFS layout 'csScalings' documents.
+base-first layout 'csScalings' documents.
 -}
 instance Semigroup CrossDBSolution where
     a <> b =
@@ -336,8 +354,8 @@ use their static 'dbCrossDBLinks'. Supporting nested substitutions would
 require threading per-DB extras through 'resolveDep' – out of scope.
 
 Each returned 'CrossDBSolution' is built bottom-up: the current DB
-contributes its @(dbName, db, scaling)@ entry, then dep DBs append theirs
-through 'resolveDep'. Dep entries appear in the BFS order of 'allDepDbs'.
+contributes its 'Reached' entry, then dep DBs append theirs through
+'resolveDep', in the name order of 'allDepDbs', each followed by its own.
 -}
 goWithDepsFromScalings ::
     UnitConfig ->
@@ -356,7 +374,7 @@ goWithDepsFromScalings unitConfig depLookup db dbName extraLinks scalings depth 
     let localInvs = map (applyBiosphereMatrix db) scalings
         baseSolutions =
             zipWith
-                (\inv s -> CrossDBSolution inv (NE.singleton (dbName, db, s)) IncludeLongTerm)
+                (\inv s -> CrossDBSolution inv (NE.singleton (Reached dbName db s)) IncludeLongTerm)
                 localInvs
                 scalings
     if depth >= maxDepsDepth
@@ -389,7 +407,7 @@ goWithDepsFromScalings unitConfig depLookup db dbName extraLinks scalings depth 
 {- | Merge a base 'CrossDBSolution' (this DB's own contribution) with the
 list of dep-DB solutions resolved at this level. Inventories are summed
 via 'M.unionWith (+)'; scaling vectors are concatenated so the final
-'csScalings' lists every visited DB in BFS order.
+'csScalings' lists every visited DB in the order it documents.
 
 Exported so the substitution-aware solver ('Service.goWithSubsAndDeps')
 reuses the same merge shape as the plain cross-DB solver.

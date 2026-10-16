@@ -82,7 +82,7 @@ import qualified Service.Aggregate as Agg
 import Service.Catalogue (PageWindow (..), catalogueDefaultLimit, catalogueEntries, catalogueFingerprint, cataloguePage)
 import qualified Service.Compare as Compare
 import qualified Service.CompareMethods as CompareMethods
-import SharedSolver (SharedSolver)
+import SharedSolver (Reached (..), SharedSolver)
 import qualified SharedSolver
 import Tree (buildLoopAwareTree)
 import Types
@@ -650,12 +650,12 @@ solution. Cache-keyed by (dbName, methods).
 buildPerDbSetTables ::
     DatabaseManager ->
     DM.CollectionName ->
-    NE.NonEmpty (Text, Database, Vector) ->
+    NE.NonEmpty Reached ->
     [Method] ->
     IO (NE.NonEmpty (Database, Vector, Method.Mapping.MethodSetTables))
 buildPerDbSetTables dbManager collection scalings methods =
     traverse
-        ( \(n, d, sv) -> do
+        ( \(Reached n d sv) -> do
             mst <- DM.mapMethodSetToTablesCached dbManager n collection d methods
             pure (d, sv, mst)
         )
@@ -2263,8 +2263,7 @@ postReducedModel dbName processIdText collectionName mExcludeLT ReducedModelRequ
     baseline <- methodScores frame atDefaults
     factorsAt <- emissionFactors frame
     answered <- supplierAnswers frame (map (movingProcess . fst) moving) suppliers
-    let (_, _, x0) :| _ = SharedSolver.csScalings atDefaults
-        modelFrame = ModelFrame{mfDatabase = db, mfScaling = x0, mfSuppliers = M.fromList [(s, (i, saConversion a)) | (i, (s, a)) <- zip [0 ..] answered], mfFactors = factorsAt}
+    let modelFrame = ModelFrame{mfDatabase = db, mfScaling = reachedScaling (NE.head (SharedSolver.csScalings atDefaults)), mfSuppliers = M.fromList [(s, (i, saConversion a)) | (i, (s, a)) <- zip [0 ..] answered], mfFactors = factorsAt}
     either unprocessable pure $ do
         processes <- traverse (modelProcess modelFrame) moving
         sets <- catMaybes <$> traverse (modelScoringSet methods) scoringSets
@@ -2330,9 +2329,8 @@ supplierAnswers frame@SupplierFrame{sfName = dbName, sfDatabase = db, sfSolver =
         solved sdb name ssolver depth supplied = fmap concat . forM (Matrix.chunksOf 64 supplied) $ \chunk -> do
             sols <- either unprocessable pure =<< liftIO (SharedSolver.goWithDeps unitCfg depLookup sdb name ssolver (map (unitDemand sdb) chunk) depth)
             forM sols $ \sol -> do
-                scores <- methodScores frame =<< liftIO (Impact.withLongTermPolicy dbManager ltMode (shapedLike dbName db rootShape sol))
-                let (_, _, v) :| _ = SharedSolver.csScalings sol
-                pure (scores, v)
+                scores <- methodScores frame =<< liftIO (Impact.withLongTermPolicy dbManager ltMode (shapedLike rootShape sol))
+                pure (scores, reachedScaling (NE.head (SharedSolver.csScalings sol)))
 
         answersIn :: Text -> [RM.Supplier] -> AppM [(RM.Supplier, SupplierAnswer)]
         answersIn name group
@@ -2393,14 +2391,19 @@ unitDemand db p = Matrix.Demand (U.generate (fromIntegral (dbActivityCount db)) 
 {- | A supplier's solution given the databases of the root's, the root first and
 at zero where the supplier does not reach it, so it is scored on the root's path.
 -}
-shapedLike :: Text -> Database -> NonEmpty (Text, Database, U.Vector Double) -> SharedSolver.CrossDBSolution -> SharedSolver.CrossDBSolution
-shapedLike rootName rootDb rootShape@((_, _, x0) :| _) sol =
-    sol{SharedSolver.csScalings = NE.appendList headed [(name, d, zeros v) | (name, d, v) <- NE.toList rootShape, S.notMember name seen]}
+shapedLike :: NonEmpty Reached -> SharedSolver.CrossDBSolution -> SharedSolver.CrossDBSolution
+shapedLike rootShape sol =
+    sol{SharedSolver.csScalings = NE.appendList headed [SharedSolver.atZero r | r <- NE.toList rootShape, S.notMember (reachedName r) seen]}
   where
-    reached@((first', _, _) :| _) = SharedSolver.csScalings sol
-    headed = if first' == rootName then reached else (rootName, rootDb, zeros x0) NE.<| reached
-    seen = S.fromList [name | (name, _, _) <- NE.toList headed]
-    zeros = U.map (const 0)
+    root :: Reached
+    root = NE.head rootShape
+
+    reached, headed :: NonEmpty Reached
+    reached = SharedSolver.csScalings sol
+    headed = if reachedName (NE.head reached) == reachedName root then reached else SharedSolver.atZero root NE.<| reached
+
+    seen :: S.Set Text
+    seen = S.fromList (map reachedName (NE.toList headed))
 
 supplierDatabase :: Text -> RM.Supplier -> Text
 supplierDatabase rootName = \case
