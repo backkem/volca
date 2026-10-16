@@ -150,7 +150,6 @@ module Database.Manager (
 
     -- * Installing a database the caller built itself
     solverFor,
-    withSolverFor,
     withSettings,
     publishLoaded,
 ) where
@@ -207,6 +206,7 @@ import Data.UUID.V4 (nextRandom)
 import Database (Geographies, buildDatabaseWithMatrices, readGeographies)
 import Database.Cutoffs (GapIndex, gapIndexOf)
 import qualified Database.Loader as Loader
+import Database.MatrixBuild (technosphereChange)
 import qualified Database.Quality as Quality
 import Matrix (clearCachedSolver)
 import Method.ChemSynonyms (ChemSynonyms, emptyChemSynonyms, loadChemSynonyms)
@@ -267,11 +267,12 @@ import Parametric (Setting, parameterised)
 import Progress (ProgressLevel (..), reportError, reportProgress, reportProgressWithTiming, withLogScope)
 import qualified Search.BM25 as BM25
 import Servant.API (FromHttpApiData)
-import SharedSolver (SharedSolver, createSharedSolver)
+import SharedSolver (SharedSolver, correctedFor, createSharedSolver)
 import qualified SharedSolver
 import SubstanceRegistry (CASNumber (..), KeyNormalizers (..), NormName (..), SubstanceEdge, casBindingsFromEdges, normalizeCAS, parseSubstanceEdges)
 import SynonymDB (BridgeDirection (..), SynEdge (..), SynonymDB (..), buildFromCSV, emptySynonymDB, excludeJunkSynonyms, excludeOverFrequentSynonyms, loadFromCSVFileWithCache, mergeSynonymDBs, normalizeName, oversizedClasses, reopenedBridges, synonymCount, uncoveredUnitSuffixes)
 import Types (
+    Activity,
     ActivityMap,
     AllocationKey (..),
     AttributeFallback (..),
@@ -292,6 +293,7 @@ import Types (
     LocationFallback (..),
     LocationUnresolved (..),
     Permission (..),
+    ProcessId,
     Release (..),
     SimpleDatabase (..),
     SparseTriple (..),
@@ -301,6 +303,7 @@ import Types (
     Unit (..),
     UnitDB,
     UnresolvedProduct (..),
+    activityName,
     allocationKeyText,
     bfCompartmentName,
     bfCompartmentSub,
@@ -3450,24 +3453,37 @@ solverFor dbName db =
         [(fromIntegral i, fromIntegral j, v) | SparseTriple i j v <- U.toList (dbTechnosphereTriples db)]
         (fromIntegral (dbActivityCount db))
 
-{- | Run with a solver for @after@, built from the loaded @before@ by
-'Database.MatrixBuild.withActivities': the loaded solver when no entry of the
-technosphere moved, otherwise one under a name of its own whose factorisation
-is destroyed when the action ends. Factorisations are cached by name, so the
-loaded database's own is never replaced.
+{- | Run with the loaded database at these settings and a solver for it, or
+say why the settings give none. The solver is the loaded one when no entry of
+the technosphere moved, and the loaded one corrected by the columns that moved
+when they are few enough for the correction to stay small. Otherwise it is one
+under a name of its own whose factorisation is destroyed when the action ends:
+factorisations are cached by name, so the loaded database's own is never
+replaced.
 -}
-withSolverFor :: DatabaseManager -> Text -> (Database, SharedSolver) -> Database -> (SharedSolver -> IO a) -> IO a
-withSolverFor manager dbName (before, loaded) after act
-    | dbTechnosphereTriples after == dbTechnosphereTriples before = act loaded
-    | otherwise = withMVar (dmFactorisationLock manager) $ \() -> do
-        name <- (\tag -> dbName <> "#" <> UUID.toText tag) <$> nextRandom
-        bracket (solverFor name after) (const (clearCachedSolver name)) act
-
--- | Run with the loaded database at these settings and a solver for it, or say why the settings give none.
-withSettings :: DatabaseManager -> Text -> (Database, SharedSolver) -> [Setting] -> (Database -> SharedSolver -> IO a) -> IO (Either Text a)
-withSettings manager dbName loaded settings act = do
+withSettings :: forall a. DatabaseManager -> Text -> (Database, SharedSolver) -> [Setting] -> (Database -> SharedSolver -> IO a) -> IO (Either Text a)
+withSettings manager dbName (before, loaded) settings act = do
     unitConfig <- getMergedUnitConfig manager
-    traverse (\db' -> withSolverFor manager dbName loaded db' (act db')) (parameterised unitConfig (fst loaded) settings)
+    either (pure . Left) (uncurry solveAt) (parameterised unitConfig before settings)
+  where
+    solveAt :: M.Map ProcessId Activity -> Database -> IO (Either Text a)
+    solveAt changed after = case technosphereChange (M.keysSet changed) before after of
+        [] -> Right <$> act after loaded
+        change
+            | correctable (length change) ->
+                correctedFor loaded change >>= either (pure . Left . (<> inputsOf change)) (fmap Right . act after)
+            | otherwise -> fmap Right . withMVar (dmFactorisationLock manager) $ \() -> do
+                name <- (\tag -> dbName <> "#" <> UUID.toText tag) <$> nextRandom
+                bracket (solverFor name after) (const (clearCachedSolver name)) (act after)
+
+    {- A correction beats a new factorisation while it stays small: its k dense
+    columns under 64 MB, and k itself bounded, since its k×k elimination grows
+    as k³ where a factorisation does not. -}
+    correctable :: Int -> Bool
+    correctable k = k <= 128 && k * fromIntegral (dbActivityCount before) * 8 <= 64 * 1024 * 1024
+
+    inputsOf :: [(Int, [(Int, Double)])] -> Text
+    inputsOf change = " (the inputs of " <> T.intercalate ", " [activityName (dbActivities before V.! column) | (column, _) <- change] <> ")"
 
 {- | Install a loaded database and the index built from it under one name.
 
