@@ -22,6 +22,7 @@ import qualified Data.List as L
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Ord (Down (..))
 import Data.Sequence (Seq (..), (|>))
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -30,7 +31,7 @@ import Data.Time (diffUTCTime, getCurrentTime)
 import qualified Data.UUID as UUID
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Database (Geographies, IdentifierReach (..), activitiesIdentifiedBy, applyStructuredFilters, findActivitiesByFields, findFlowsBySynonym, flowNameRelevance, locationAnswers)
+import Database (Geographies, IdentifierReach (..), activitiesIdentifiedBy, applyStructuredFilters, filterByName, findActivitiesByFields, findFlowsBySynonym, flowNameRelevance, flowSearchFields, locationAnswers)
 import Database.Allocation (asAllocated, describeRefusal, propertyShares)
 import Database.Cutoffs (Cutoffs (..), GapIndex, cutoffsOf, cutoffsReached, gapIndexOf)
 import Database.MatrixBuild (findProducer, linkedProducer)
@@ -277,6 +278,27 @@ getActivityInfo db queryText = do
                 }
      in Right $ toJSON activityInfo
 
+{- | The flows of an inventory whose name answers @query@, read the way
+search_flows reads it, synonyms included, with only its closest match kept.
+-}
+inventoryFlowsNamed :: Text -> [InventoryFlowDetail] -> [InventoryFlowDetail]
+inventoryFlowsNamed query = filterByName query (flowSearchFields . BioKind . ifdFlow)
+
+{- | The inventory with only the flows whose name answers @query@ and, with
+@limit@, only that many of them, largest in absolute quantity first. The
+totals and statistics still cover the whole inventory; 'imMatchedFlows' counts
+the flows the name kept, so a caller can tell 50 shown of 50 matched from 50
+of 300.
+-}
+keepInventoryFlows :: Maybe Text -> Maybe Int -> InventoryExport -> InventoryExport
+keepInventoryFlows query limit inv =
+    inv
+        { ieMetadata = (ieMetadata inv){imMatchedFlows = length named}
+        , ieFlows = maybe id (\n -> take n . L.sortOn (Down . abs . ifdQuantity)) limit named
+        }
+  where
+    named = maybe id inventoryFlowsNamed query (ieFlows inv)
+
 {- | Core inventory calculation logic using matrix-based LCA calculations
 | Convert raw inventory to structured export format.
 
@@ -335,6 +357,7 @@ convertToInventoryExport db bioFlowDB unitDB processId rootActivity cutoffs inve
                         , prsBlockProducts = sbProducts rootBlock
                         }
                 , imTotalFlows = length flowDetails
+                , imMatchedFlows = length flowDetails
                 , imEmissionFlows = emissionFlows
                 , imResourceFlows = resourceFlows
                 }

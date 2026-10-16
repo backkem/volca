@@ -24,7 +24,7 @@ The other direction is a promise about pyvolca's own names. A name this client p
 
 _Generated from `volca._compat`: run `python scripts/gen_api_md.py` to regenerate._
 
-This build of **pyvolca 0.13.1** speaks wire formats **2 to 66** and requires a VoLCA engine **≥ v0.9.1**; a capability gated on a newer wire than the engine speaks refuses to run with a clear error. A name this build has retired keeps working until pyvolca **1.0**.
+This build of **pyvolca 0.13.1** speaks wire formats **2 to 67** and requires a VoLCA engine **≥ v0.9.1**; a capability gated on a newer wire than the engine speaks refuses to run with a clear error. A name this build has retired keeps working until pyvolca **1.0**.
 
 <!-- END: compatibility -->
 
@@ -1008,9 +1008,11 @@ to the inventory; use `aggregate` with ``scope="biosphere"``
 for grouped views.
 
 Args:
-    flow: Substring filter on flow name.
-    limit: Cap on returned flow rows. (Server returns full inventory
-        otherwise; the engine doesn't paginate this endpoint.)
+    flow: Keep the flows whose name answers this query, read the way
+        `search_flows` reads it, synonyms included.
+    limit: Keep this many flows, largest in absolute quantity first.
+        Without it, every flow is returned. The statistics cover the
+        whole inventory either way.
     substitutions: Upstream supplier swaps; see `get_supply_chain`.
     parameters: Values for input parameters; see `get_supply_chain`.
 
@@ -2857,10 +2859,10 @@ one. ``category`` is the engine-normalised category used for grouping.
 
 Life-cycle inventory of an activity: cumulative biosphere flows.
 
-Returned by `Client.get_inventory`. The engine does not paginate:
-``flows`` is the full inventory (filtered by ``flow=`` substring when
-requested). ``statistics`` carries the per-direction roll-ups and the
-most-populated categories.
+Returned by `Client.get_inventory`. ``flows`` is the full
+inventory, or the flows ``flow=`` and ``limit=`` kept when given.
+``statistics`` carries the per-direction roll-ups and the
+most-populated categories, over the full inventory.
 
 ``root`` is the activity the inventory was computed for. ``total_flows``,
 ``emission_flows``, ``resource_flows`` mirror the engine's metadata block.
@@ -2873,6 +2875,7 @@ most-populated categories.
 | `resource_flows` | `int` | _required_ |
 | `flows` | `list[InventoryFlow]` | _required_ |
 | `statistics` | `InventoryStatistics` | _required_ |
+| `matched_flows` | `int` | 0 |
 | `cutoff_inputs` | `list[CutoffInput]` | list() |
 | `withheld_cutoffs` | `list[WithheldCutoffs]` | list() |
 

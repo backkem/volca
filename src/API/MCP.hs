@@ -54,7 +54,7 @@ import API.MCP.Columnar (resolveSingleScoringSet, toColumnarBatch)
 import API.MCP.Enrich (addWebUrlMaybe, attachMarketHintByName, cutoffFields, encodeSegment, filterScoringSets, impactsPath, scoreActivityWebUrl, sensitivityPath, slimLCIAPanel, webUrlField, withCutoffNotice)
 import API.MethodEditHandlers (collectionFlows, historyToAPI, outcomeToAPI, scoringSetAPI)
 import API.Routes (MethodComparisonAsk (..), MethodComparisonFailure (..), collectionNotLoadedMessage, flowFactorsToAPI, methodRefusalMessage, methodSummary, runMethodComparison, runMethodProfile, selectMethod)
-import API.Types (ActivityForAPI (..), ActivityInfo (..), Aggregation (..), ClassificationSystem (..), ExchangeEditRequest (..), ExchangeWithUnit (..), InventoryExport (..), InventoryFlowDetail (..), LCIABatchResult (..), ParameterValue (..), Perturbation (..), ScoreAPI (..), ScoringSetAPI (..), Substitution (..), SubstitutionRequest (..), SupplyChainResponse (..), WithheldShare, toCategoryEdit, toExchangeEdits, toFactorEdit, toScoringEdit)
+import API.Types (ActivityForAPI (..), ActivityInfo (..), Aggregation (..), ClassificationSystem (..), ExchangeEditRequest (..), ExchangeWithUnit (..), InventoryExport (..), InventoryFlowDetail (..), InventoryMetadata (..), LCIABatchResult (..), ParameterValue (..), Perturbation (..), ScoreAPI (..), ScoringSetAPI (..), Substitution (..), SubstitutionRequest (..), SupplyChainResponse (..), WithheldShare, toCategoryEdit, toExchangeEdits, toFactorEdit, toScoringEdit)
 import Control.Monad (forM, forM_, join, mfilter, when)
 import Data.List (find)
 import qualified Data.List as L
@@ -74,7 +74,7 @@ import qualified Service.Compare as Compare
 import qualified Service.CompareMethods as CompareMethods
 import SharedSolver (SharedSolver, computeInventoryMatrixWithDepsCached)
 import qualified SharedSolver
-import Types (Activity (..), BiosphereFlow (..), ClassificationFilter (..), ClassificationMatch (..), Database (..), FlowKind (BioKind), Indexes (..), KindFilter (..), Licence (..), Permission (..), ProcessId, UUID, UnitDB, activityLocation, activityName, allocationKeyText, bfCompartmentName, bfCompartmentSub, exchangeIsInput, exchangeKindChoices, exchangeKindOf, getUnitNameForBioFlow, granted, lookupExchangeFlow, parseAllocationKey, parseExchangeKind, parseKindNames, processIdToText, qualifyRef, withheldSentence)
+import Types (Activity (..), BiosphereFlow (..), ClassificationFilter (..), ClassificationMatch (..), Database (..), Indexes (..), KindFilter (..), Licence (..), Permission (..), ProcessId, UUID, UnitDB, activityLocation, activityName, allocationKeyText, bfCompartmentName, bfCompartmentSub, exchangeIsInput, exchangeKindChoices, exchangeKindOf, getUnitNameForBioFlow, granted, lookupExchangeFlow, parseAllocationKey, parseExchangeKind, parseKindNames, processIdToText, qualifyRef, withheldSentence)
 import Usage (ProcessKey (..), UsageKind (..), UsageLog, Use (..), readerOf, recordUse)
 
 -- ---------------------------------------------------------------------------
@@ -1296,14 +1296,8 @@ callGetInventory dbManager rid args =
             liftIO (Impact.inventoryRefusal dbManager sol) >>= mapM_ throwE
             cutoffs <- liftIO (Impact.solutionCutoffs dbManager ReadInventory sol)
             let inv = Service.convertToInventoryExport db mFlows mUnits processId activity cutoffs (SharedSolver.csInventory sol)
-                flows = ieFlows inv
-                -- The query read the way search_flows reads it, synonyms
-                -- included, and only its closest match kept.
-                filtered = case nameFilter of
-                    Nothing -> flows
-                    Just q -> filterByName q (flowSearchFields . BioKind . ifdFlow) flows
-                sorted = L.sortBy (\a b -> compare (abs $ ifdQuantity b) (abs $ ifdQuantity a)) filtered
-                topN = take limit sorted
+                kept = Service.keepInventoryFlows nameFilter (Just limit) inv
+                topN = ieFlows kept
                 slim f =
                     object
                         [ "flow" .= bfName (ifdFlow f)
@@ -1316,10 +1310,8 @@ callGetInventory dbManager rid args =
                 toolSuccessJson rid $
                     object $
                         [ "statistics" .= toJSON (ieStatistics inv)
-                        , "total_flows" .= length flows
-                        , -- What the filter kept, so a caller can tell 50 rows
-                          -- shown out of 50 matched from 50 out of 300.
-                          "matched_flows" .= length filtered
+                        , "total_flows" .= imTotalFlows (ieMetadata kept)
+                        , "matched_flows" .= imMatchedFlows (ieMetadata kept)
                         , "shown_flows" .= length topN
                         , "flows" .= map slim topN
                         ]
