@@ -29,7 +29,11 @@ data LU
         !(U.Vector Int)
 
 {- | Factorise the @n@×@n@ matrix given row by row, or refuse when it is
-singular: a pivot below 1e-12 times the largest entry.
+singular: a pivot below 1e-12 of the largest term of the row it came from, the
+1 of the identity a correction adds to counted among them. Each row is judged
+against itself: a process counted in grams has entries a thousand times those
+of one counted in kilograms, and that must not make another process's pivot
+look small.
 -}
 factorLU :: Int -> U.Vector Double -> Either Text LU
 factorLU n entries
@@ -37,25 +41,26 @@ factorLU n entries
     | not (U.all isFinite entries) = Left "the system has an entry that is not a finite number"
     | otherwise = case U.createT eliminate of
         (Just rows, factors) -> Right (LU n factors rows)
-        (Nothing, _) -> Left "the system is singular"
+        _ -> Left "the system is singular"
   where
     isFinite :: Double -> Bool
     isFinite x = not (isNaN x || isInfinite x)
-    tolerance :: Double
-    tolerance = 1e-12 * U.foldl' (\m x -> max m (abs x)) 0 entries
+    scale :: U.Vector Double
+    scale = U.generate n (\r -> U.foldl' (\m x -> max m (abs x)) 1 (U.slice (r * n) n entries))
 
     eliminate :: ST s (Maybe (U.Vector Int), MU.MVector s Double)
     eliminate = do
         a <- U.thaw entries
         rows <- U.thaw (U.enumFromN 0 n)
-        regular <- foldlM (\ok col -> if ok then step a rows col else pure False) True [0 .. n - 1]
+        eliminated <- foldlM (\ok col -> if ok then step a rows col else pure False) True [0 .. n - 1]
         frozen <- U.freeze rows
-        pure (if regular then Just frozen else Nothing, a)
+        pure (if eliminated then Just frozen else Nothing, a)
 
     step :: MU.MVector s Double -> MU.MVector s Int -> Int -> ST s Bool
     step a rows col = do
         (size, pivotRow) <- foldlM (\best r -> max best . (\v -> (abs v, r)) <$> MU.read a (r * n + col)) (-1, col) [col .. n - 1]
-        if size <= tolerance
+        origin <- MU.read rows pivotRow
+        if size < 1e-12 * scale U.! origin
             then pure False
             else do
                 when (pivotRow /= col) $ do
