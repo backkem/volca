@@ -8,10 +8,17 @@ the engine holds ('Expr.writtenIn'), and reads no parameter the format cannot
 name. Otherwise it is frozen: a line keeps its amount, a calculated parameter
 becomes an input parameter at its value, and the warnings name it.
 
-No format written here names its lines, so a line that a formula reads by its
-name becomes a calculated parameter of its process under that name, its
-formula the line's, and the line reads the parameter. A share's formula,
-kept in SimaPro's language, follows the same rule.
+A format that names no line (SimaPro, openLCA) gets each line a formula
+reads by its name as a calculated parameter of its process under that name,
+its formula the line's, and the line reads the parameter. EcoSpold 2 names its
+lines, so there a line keeps its name, unless its amount is written otherwise
+than the engine holds it (an avoided product, negated): the name would then
+give its readers that other amount. A share's formula, kept in SimaPro's
+language, follows the same rule.
+
+EcoSpold 2 states an amount beside every formula and has no database-wide
+parameter: a calculated parameter with no value cannot be written there, and
+each dataset carries the database's parameters it reads ('databaseCopies').
 -}
 module Database.ExportFormulas (
     Exported (..),
@@ -20,7 +27,9 @@ module Database.ExportFormulas (
     processExport,
     Scaled (..),
     exportFormulas,
+    databaseCopies,
     formulaWarnings,
+    frozenWarnings,
     valuesOnly,
 ) where
 
@@ -33,6 +42,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import qualified Expr
+import Parametric (databaseParametersIn)
 import Types
 
 -- | A parameter as a format writes it: a value and its spread, or a formula in the format's language.
@@ -63,11 +73,33 @@ data ProcessExport = ProcessExport
     -- ^ The formula of each line written with one, by its position in the activity.
     , peShares :: !(IM.IntMap Text)
     -- ^ The formula of each product's share written with one, by its position.
+    , peLineNames :: !(IM.IntMap Text)
+    -- ^ The name each line is written with, by its position, in a format that names its lines.
     }
+
+-- | Whether a format names a line other formulas read, or reads it through a parameter of that name.
+data LineNames = NamedLines | LinesAsParameters
+
+lineNames :: Expr.Dialect -> LineNames
+lineNames = \case
+    Expr.EcoSpold2 _ -> NamedLines
+    Expr.SimaPro -> LinesAsParameters
+    Expr.OpenLca -> LinesAsParameters
+    Expr.Volca -> LinesAsParameters
+    Expr.Python -> LinesAsParameters
+
+-- | Whether a format states an amount beside every formula, so that a formula with no value cannot be written.
+statesEveryAmount :: Expr.Dialect -> Bool
+statesEveryAmount = \case
+    Expr.EcoSpold2 _ -> True
+    Expr.SimaPro -> False
+    Expr.OpenLca -> False
+    Expr.Volca -> False
+    Expr.Python -> False
 
 -- | What is written of a process, nothing for one the database does not hold.
 processExport :: Exported -> (UUID, UUID) -> ProcessExport
-processExport exported key = M.findWithDefault (ProcessExport M.empty IM.empty IM.empty) key (exProcesses exported)
+processExport exported key = M.findWithDefault (ProcessExport M.empty IM.empty IM.empty IM.empty) key (exProcesses exported)
 
 exportFormulas :: Expr.Dialect -> ((UUID, UUID) -> Exchange -> Scaled) -> SimpleDatabase -> Exported
 exportFormulas dialect scaledBy db =
@@ -85,24 +117,34 @@ exportFormulas dialect scaledBy db =
     databaseFrozen :: [Text]
     (database, databaseFrozen) = parametersIn dialect "the database" databaseUnwritten (sdbParameters db)
 
-    -- The names the database's formulas read, which a process's formulas see too.
-    databaseReads :: [Text]
-    databaseReads = concat [Expr.collectIdentifiers Expr.Volca f | CalculatedParameter f _ <- map parameterDefinition (M.elems (sdbParameters db))]
-
     processes :: M.Map (UUID, UUID) (ProcessExport, [Text])
     processes = M.mapWithKey process (sdbActivities db)
 
     -- A process's parameters and formulas as written, and those frozen.
     process :: (UUID, UUID) -> Activity -> (ProcessExport, [Text])
     process key source =
-        ( ProcessExport{peParameters = M.fromList parameters, peLines = IM.fromList (rights lines'), peShares = IM.fromList (rights shares)}
+        ( ProcessExport{peParameters = M.fromList parameters, peLines = IM.fromList (rights lines'), peShares = IM.fromList (rights shares), peLineNames = named}
         , parametersFrozen <> lefts lines' <> lefts shares
         )
       where
-        act = namedLinesAsParameters databaseReads source
-        own = activityParameters act
-        unwritten = unwritable dialect databaseUnwritten own
-        (parameters, parametersFrozen) = parametersIn dialect (activityName act) unwritten own
+        -- The process's names: its own parameters, and the lines formulas read by name.
+        viewed = namedLinesAsParameters (const True) (namesReadByDatabase db) source
+        act = case lineNames dialect of
+            NamedLines -> namedLinesAsParameters (not . asHeld . scaledBy key) (namesReadByDatabase db) source
+            LinesAsParameters -> viewed
+        unwritten = unwritable dialect databaseUnwritten (activityParameters viewed)
+        (parameters, parametersFrozen) = parametersIn dialect (activityName act) unwritten (activityParameters act)
+        taken = S.map T.toLower (M.keysSet (activityParameters source))
+        named = case lineNames dialect of
+            NamedLines ->
+                IM.fromList
+                    [ (i, name)
+                    | (i, ex) <- zip [0 ..] (exchanges act)
+                    , Just ExchangeFormula{efName = Just name} <- [exchangeFormula ex]
+                    , S.notMember (T.toLower name) taken
+                    , S.notMember (T.toLower name) unwritten
+                    ]
+            LinesAsParameters -> IM.empty
         lines' =
             [ maybe (Left (activityName act <> " · " <> flowName db ex <> ": " <> text)) (Right . (,) i) (writtenWith dialect unwritten text)
             | (i, ex) <- zip [0 ..] (exchanges act)
@@ -116,6 +158,17 @@ exportFormulas dialect scaledBy db =
             , Just DeclaredShare{dsFormula = Just f} <- [exchangeDeclaredShare ex]
             ]
 
+-- | The names the database's formulas read, which a process's formulas see too.
+namesReadByDatabase :: SimpleDatabase -> [Text]
+namesReadByDatabase db = concat [Expr.collectIdentifiers Expr.Volca f | CalculatedParameter f _ <- map parameterDefinition (M.elems (sdbParameters db))]
+
+{- | The database's parameters each process reads, as a format with no
+database-wide parameter copies them into it: at the value they settle to
+there, a line read by a name shadowing a database parameter of that name.
+-}
+databaseCopies :: SimpleDatabase -> M.Map (UUID, UUID) (M.Map Text Parameter)
+databaseCopies db = M.map (\act -> databaseParametersIn (namedLinesAsParameters (const True) (namesReadByDatabase db) act) (sdbParameters db)) (sdbActivities db)
+
 -- | A formula as the format writes it, unless it reads a name the format does not.
 writtenWith :: Expr.Dialect -> S.Set Text -> Text -> Maybe Text
 writtenWith dialect unwritten formula
@@ -127,11 +180,18 @@ scaled = \case
     Times k -> Expr.times k
     DividedBy k -> Expr.dividedBy k
 
+-- | Whether a line's amount is written as the engine holds it.
+asHeld :: Scaled -> Bool
+asHeld = \case
+    Times k -> k == 1
+    DividedBy k -> k == 1
+
 {- | The names, lowercased, a scope cannot write, given those its enclosing
 scope cannot and the scope's own parameters, which shadow them: one the format
 does not read as a name, and a calculated parameter with no value whose
 formula reads such a name or cannot be written, which could be written
-neither way and so leaves its own readers without it.
+neither way and so leaves its own readers without it. In a format stating an
+amount beside every formula, a calculated parameter with no value is one.
 -}
 unwritable :: Expr.Dialect -> S.Set Text -> M.Map Text Parameter -> S.Set Text
 unwritable dialect enclosing params = grown (S.union outer (S.fromList (map T.toLower unnamed)))
@@ -143,7 +203,7 @@ unwritable dialect enclosing params = grown (S.union outer (S.fromList (map T.to
         | S.null more = out
         | otherwise = grown (S.union out more)
       where
-        more = S.fromList [name | (name, f) <- valueless, S.notMember name out, isNothing (writtenWith dialect out f)]
+        more = S.fromList [name | (name, f) <- valueless, S.notMember name out, statesEveryAmount dialect || isNothing (writtenWith dialect out f)]
 
 -- | Parameters as the format writes them, and those frozen or left out.
 parametersIn :: Expr.Dialect -> Text -> S.Set Text -> M.Map Text Parameter -> ([(Text, (Parameter, Written))], [Text])
@@ -160,13 +220,14 @@ parametersIn dialect place unwritten params = (concatMap fst each, concatMap snd
                     Just v -> ([(name, (p, WrittenValue v Nothing))], [place <> " · " <> name <> ": " <> f])
                     Nothing -> ([], [place <> " · " <> name <> ": " <> f <> " (no value, left out)"])
 
-{- | The activity with each named line some formula reads made a calculated
-parameter of that name, the line reading it. A name a parameter already has
+{- | The activity with each named line some formula reads, among those
+given, made a calculated parameter of that name, the line reading it. A line
+not given keeps its name. A name a parameter already has
 stays the parameter's: the engine refuses a line of that name at edit, and an
 import keeps no formula reading a name given twice.
 -}
-namedLinesAsParameters :: [Text] -> Activity -> Activity
-namedLinesAsParameters databaseReads act =
+namedLinesAsParameters :: (Exchange -> Bool) -> [Text] -> Activity -> Activity
+namedLinesAsParameters given databaseReads act =
     act
         { exchanges = map unnamed (exchanges act)
         , activityParameters = M.union (activityParameters act) (M.fromList (mapMaybe asParameter (exchanges act)))
@@ -188,14 +249,16 @@ namedLinesAsParameters databaseReads act =
     asParameter :: Exchange -> Maybe (Text, Parameter)
     asParameter ex = case exchangeFormula ex of
         Just ExchangeFormula{efName = Just name, efText = text}
-            | read' name -> Just (name, Parameter{parameterDefinition = CalculatedParameter text (Just (exchangeAmount ex)), parameterUnit = Nothing, parameterDescription = ""})
+            | given ex && read' name -> Just (name, Parameter{parameterDefinition = CalculatedParameter text (Just (exchangeAmount ex)), parameterUnit = Nothing, parameterDescription = ""})
         _ -> Nothing
 
     unnamed :: Exchange -> Exchange
     unnamed ex = case exchangeFormula ex of
         Just ExchangeFormula{efName = Just name}
-            | read' name -> withFormula (Just (ExchangeFormula Nothing name)) ex
-        Just f -> withFormula (Just f{efName = Nothing}) ex
+            | given ex && read' name -> withFormula (Just (ExchangeFormula Nothing name)) ex
+        Just f
+            | given ex -> withFormula (Just f{efName = Nothing}) ex
+            | otherwise -> ex
         Nothing -> ex
 
 -- | The name of a line's flow, as the warnings name it.
@@ -225,14 +288,20 @@ valuesOnly db =
     ]
         <> [T.pack (show (M.size (sdbParameters db))) <> " parameters of the database are not written" | not (M.null (sdbParameters db))]
 
--- | What the export says of the formulas it could not write.
+-- | What the export says of the formulas it could not write, and of the parameters' units it has no place for.
 formulaWarnings :: Exported -> [Text]
-formulaWarnings ex =
+formulaWarnings ex = frozenWarnings ex <> [tshow (exUnits ex) <> " parameters state a unit, which the format has no place for" | exUnits ex > 0]
+  where
+    tshow :: Int -> Text
+    tshow = T.pack . show
+
+-- | What the export says of the formulas it could not write.
+frozenWarnings :: Exported -> [Text]
+frozenWarnings ex =
     [ T.intercalate "\n  " ((tshow (length frozen) <> " formulas are written as the values they compute, the format reading them otherwise or not at all:") : take 10 frozen <> ["and " <> tshow (length frozen - 10) <> " more" | length frozen > 10])
     | let frozen = exFrozen ex
     , not (null frozen)
     ]
-        <> [tshow (exUnits ex) <> " parameters state a unit, which the format has no place for" | exUnits ex > 0]
   where
     tshow :: Int -> Text
     tshow = T.pack . show
