@@ -256,6 +256,21 @@
   parameter, which the engine does not read; loading the package says which.
   pyvolca has `Scenario.shipped`. Wire revision 77.
 
+- An openLCA export writes the package's product systems back, with their
+  parameter sets, and the scenarios saved on the database go with them. The
+  product system "PV system" keeps its identifier, its reference process and
+  how much of it, and lists the processes its suppliers reach, linked as the
+  exported processes name their suppliers. A scenario saved as "PV system:
+  Hot climate" becomes that system's set "Hot climate", in place of a set of
+  that name; one saved under another name goes, under that name, on the
+  first system whose name no other system has and that has no set of that
+  name. Read back, each scenario is listed once. The export says which
+  product systems it leaves out (their reference process is no longer in the
+  database), which values name a process gone, which saved scenarios have a
+  problem or no system to go on, and which would read back as none (another
+  system of the same name has a set of that name). A cached openLCA package
+  is read again once.
+
 ### Fixed
 
 - A process split from a block of several products keeps every formula
