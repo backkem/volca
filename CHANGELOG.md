@@ -332,6 +332,15 @@
 
 ### Fixed
 
+- A container started again no longer rebuilds the synonym candidates of its
+  methods. They were saved in the working directory of the container, which
+  is gone when it stops, while databases and methods go to `VOLCA_DATA_DIR`;
+  they now go there too, as do the reference tables sent through the API
+  (flow synonyms, compartment mappings, units, energy densities), which the
+  next start looked for in the wrong place. A start that already holds a
+  candidate also no longer extracts its synonym pairs before noticing it need
+  not. A start that finds its caches on disk, with the EF 3.1 method loaded,
+  went from 22 to 13 seconds on a desktop machine.
 - A database exported as SimaPro CSV or as a Brightway workbook keeps the
   CAS number of each substance. Both writers dropped it, so a method that
   recognizes a substance by its CAS no longer scored it after re-import: a

@@ -216,11 +216,13 @@ import Database.Manager (
     addFlowSynonyms,
     addMethodCollection,
     addUnitDefs,
+    compartmentMappingsUploadsDir,
     databaseCoverageReport,
     databaseGapReport,
     databaseLicence,
     databaseQualityReport,
     finalizeDatabase,
+    flowSynonymsUploadsDir,
     getDatabase,
     getDatabaseSetupInfo,
     getFlowSynonymGroups,
@@ -249,6 +251,7 @@ import Database.Manager (
     setUploadLicence,
     setUploadRelease,
     setupErrorMessage,
+    unitDefsUploadsDir,
     unloadCompartmentMappings,
     unloadDatabase,
     unloadFlowSynonyms,
@@ -1577,14 +1580,14 @@ rdOps ::
     , DatabaseManager -> Text -> IO (Either Text ())
     , DatabaseManager -> RefDataConfig -> IO ()
     , DatabaseManager -> Text -> IO (Either Text ())
-    , Text -- upload subdir
+    , IO FilePath -- where uploads go
     )
 rdOps FlowSynonyms =
-    (listFlowSynonyms, loadFlowSynonyms, unloadFlowSynonyms, addFlowSynonyms, removeFlowSynonyms, "flow-synonyms")
+    (listFlowSynonyms, loadFlowSynonyms, unloadFlowSynonyms, addFlowSynonyms, removeFlowSynonyms, flowSynonymsUploadsDir)
 rdOps CompartmentMappings =
-    (listCompartmentMappings, loadCompartmentMappings, unloadCompartmentMappings, addCompartmentMappings, removeCompartmentMappings, "compartment-mappings")
+    (listCompartmentMappings, loadCompartmentMappings, unloadCompartmentMappings, addCompartmentMappings, removeCompartmentMappings, compartmentMappingsUploadsDir)
 rdOps UnitDefs =
-    (listUnitDefs, loadUnitDefs, unloadUnitDefs, addUnitDefs, removeUnitDefs, "units")
+    (listUnitDefs, loadUnitDefs, unloadUnitDefs, addUnitDefs, removeUnitDefs, unitDefsUploadsDir)
 
 convertRefDataStatus :: RefDataStatus -> RefDataStatusAPI
 convertRefDataStatus s =
@@ -1627,10 +1630,10 @@ uploadRefData :: RefDataKind -> Maybe Text -> Maybe Text -> SourceIO UploadChunk
 uploadRefData kind mName mDesc src =
     withStreamedUpload mName mDesc src $ \name mDescription csvBytes -> do
         dbManager <- asks aeDbManager
-        let (_, _, _, addFn, _, subdir) = rdOps kind
-        baseDir <- liftIO UploadedDB.getDataDir
+        let (_, _, _, addFn, _, uploadsDirOf) = rdOps kind
+        uploadsDir <- liftIO uploadsDirOf
         let slug = T.toLower $ T.intercalate "-" $ T.words name
-            uploadDir = baseDir </> "uploads" </> T.unpack subdir </> T.unpack slug
+            uploadDir = uploadsDir </> T.unpack slug
             csvPath = uploadDir </> "data.csv"
         liftIO $ do
             System.Directory.createDirectoryIfMissing True uploadDir
