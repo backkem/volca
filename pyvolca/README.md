@@ -24,7 +24,7 @@ The other direction is a promise about pyvolca's own names. A name this client p
 
 _Generated from `volca._compat`: run `python scripts/gen_api_md.py` to regenerate._
 
-This build of **pyvolca 0.13.1** speaks wire formats **2 to 79** and requires a VoLCA engine **≥ v0.9.1**; a capability gated on a newer wire than the engine speaks refuses to run with a clear error. A name this build has retired keeps working until pyvolca **1.0**.
+This build of **pyvolca 0.13.1** speaks wire formats **2 to 80** and requires a VoLCA engine **≥ v0.9.1**; a capability gated on a newer wire than the engine speaks refuses to run with a clear error. A name this build has retired keeps working until pyvolca **1.0**.
 
 <!-- END: compatibility -->
 
@@ -3411,6 +3411,12 @@ One process's batch impacts inside a `BatchScores`.
 `Client.get_impacts_batch` returns for a single process.
 ``parameter_set`` is the position of the parameter set it was scored at,
 when `Client.score_activities` was given ``parameter_sets``.
+``product_amount`` is the amount the source declares for the activity's
+reference product, negative for a treatment taking in waste, and
+``product_unit`` its unit. The scores are per one ``product_unit``
+whatever the amount, as for `Activity.product_amount`.
+Both are ``None`` for an activity without a reference product, and from
+an engine older than wire revision 80.
 
 | Field | Type | Default |
 |-------|------|---------|
@@ -3418,6 +3424,8 @@ when `Client.score_activities` was given ``parameter_sets``.
 | `activity_name` | `str` | _required_ |
 | `impacts` | `LCIABatchResult` | _required_ |
 | `parameter_set` | `int \| None` | None |
+| `product_amount` | `float \| None` | None |
+| `product_unit` | `str \| None` | None |
 
 ### `ScoringIndicator`
 
