@@ -2925,7 +2925,9 @@ class Client:
         ``product_unit`` (the reference each score is per one unit of), each
         method's score under the method's name (not its category, which
         several methods share: four climate change methods in EF 3.1), and each scoring set's
-        ``total`` under the set's name (a set without one has no column). The ids go in batches of ``chunk`` (a hosted engine caps a
+        scores under the set's then the score's name: ``"ECS total"`` for a
+        set declared with a ``total`` formula, ``"ECS Single score"`` for one
+        built with :meth:`create_scoring_set`. The ids go in batches of ``chunk`` (a hosted engine caps a
         batch), ``workers`` at a time. Raises VoLCAError naming every id the
         engine did not score.
         """
@@ -2944,7 +2946,11 @@ class Client:
                 "product_unit": s.product_unit,
             }
             | {r.method_name: r.score for r in s.impacts.results}
-            | {name: values["total"] for name, values in s.impacts.scoring_results.items() if "total" in values}
+            | {
+                f"{name} {score}": value
+                for name, scores in s.impacts.scoring_results.items()
+                for score, value in scores.items()
+            }
             for b in scored
             for s in b.results
         ]

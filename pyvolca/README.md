@@ -1603,7 +1603,9 @@ A row holds ``process_id``, ``activity_name``, ``product_amount`` and
 ``product_unit`` (the reference each score is per one unit of), each
 method's score under the method's name (not its category, which
 several methods share: four climate change methods in EF 3.1), and each scoring set's
-``total`` under the set's name (a set without one has no column). The ids go in batches of ``chunk`` (a hosted engine caps a
+scores under the set's then the score's name: ``"ECS total"`` for a
+set declared with a ``total`` formula, ``"ECS Single score"`` for one
+built with `create_scoring_set`. The ids go in batches of ``chunk`` (a hosted engine caps a
 batch), ``workers`` at a time. Raises VoLCAError naming every id the
 engine did not score.
 
