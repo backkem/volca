@@ -459,7 +459,8 @@ class Client:
         self.base_url = base_url.rstrip("/")
         self.db = db
         self._session = requests.Session()
-        self._session.headers["Accept"] = "application/json"
+        # JSON where a route offers it; a route serving only a file still answers.
+        self._session.headers["Accept"] = "application/json, */*;q=0.5"
         if password:
             self._session.headers["Authorization"] = f"Bearer {password}"
         # Lazily fetched on first _call() invocation.
