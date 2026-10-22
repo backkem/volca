@@ -97,6 +97,44 @@ class TestScoreActivities:
         assert result.not_found == ["p3"]
         assert result.invalid == ["bogus"]
 
+    def test_score_table_gives_one_flat_row_per_process_in_order(self, mocked_client, make_response):
+        client, session = mocked_client
+
+        def answer(url, **kwargs):
+            ids = kwargs["json"]["processIds"]
+            impacts = lambda i: _batch(float(i[1:])) | {"scoringResults": {"ECS": {"total": 10 * float(i[1:])}, "Edited": {"other": 1.0}}}
+            return make_response(
+                {
+                    "results": [
+                        {"processId": i, "activityName": i.upper(), "productAmount": 1.0, "productUnit": "kg", "impacts": impacts(i)}
+                        for i in ids
+                    ],
+                    "notFound": [],
+                    "invalid": [],
+                }
+            )
+
+        session.post.side_effect = answer
+        rows = client.score_table(["p1", "p2", "p3"], collection="methods", chunk=2, workers=2)
+        assert session.post.call_count == 2
+        assert rows == [
+            {
+                "process_id": f"p{n}",
+                "activity_name": f"P{n}",
+                "product_amount": 1.0,
+                "product_unit": "kg",
+                "Climate change": float(n),
+                "ECS": 10.0 * n,
+            }
+            for n in (1, 2, 3)
+        ]
+
+    def test_score_table_names_every_process_left_unscored(self, mocked_client, make_response):
+        client, session = mocked_client
+        session.post.return_value = make_response({"results": [], "notFound": ["p1"], "invalid": ["bogus"]})
+        with pytest.raises(VoLCAError, match=r"\['p1', 'bogus'\]"):
+            client.score_table(["p1", "bogus"], collection="methods")
+
     def test_reads_each_reference_amount_and_unit(self, mocked_client, make_response):
         client, session = mocked_client
         session.post.return_value = make_response(
