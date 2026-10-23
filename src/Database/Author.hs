@@ -80,7 +80,7 @@ import Data.Either (partitionEithers)
 import Data.Indexing (repeated)
 import Data.List (nub)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, mapMaybe, maybeToList)
+import Data.Maybe (fromMaybe, isJust, mapMaybe, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -99,11 +99,14 @@ import Types (
     Exchange (..),
     ExchangeFormula (..),
     ExchangeLocation (..),
+    ExchangeProperties (..),
     Medium (..),
     Parameter (..),
     ParameterDefinition (..),
+    Price (..),
     ProcessId,
     ProcessRef (..),
+    StatedAmount (..),
     SupplierClaim (..),
     TechRole (..),
     TechnosphereFlow (..),
@@ -113,9 +116,12 @@ import Types (
     WasteFlow (..),
     declaredLocationSource,
     exchangeAmount,
+    exchangeFlowId,
     exchangeFormula,
     exchangeIsInput,
+    exchangeIsProductOutput,
     exchangeIsReference,
+    exchangeProperties,
     findProcessIdByActivityUUID,
     getUnitNameForExchange,
     isPlaceholderUnit,
@@ -474,6 +480,11 @@ data ExchangeEdit
     | SetText ActivityText
     | -- | A line's formula in VoLCA's language, or none; a named line keeps its name either way.
       SetFormula ExchangeSelector (Maybe Text)
+    | {- | The price of a product output, named by its flow, or none. It is the
+      one edit that reaches the product side: a price weighs a product against
+      the others of its block, and leaves what the activity is untouched.
+      -}
+      SetPrice UUID (Maybe StatedAmount)
     | -- | A parameter of the activity, added, or replaced under the same spelling.
       SetParameter Text Parameter
     | RemoveParameter Text
@@ -599,6 +610,7 @@ amountsBefore activity = \case
     SetAmount selector _ -> named selector
     RemoveExchange selector -> named selector
     SetFormula selector _ -> named selector
+    SetPrice _ _ -> []
     AddExchange _ -> []
     SetText _ -> []
     SetParameter _ _ -> []
@@ -649,8 +661,11 @@ applyOneEdit ctx act edit = case edit of
     RemoveExchange sel -> case selectFrom sel current of
         Left err -> Left [err]
         Right (matched, isSelected) -> Right (changed (filter (not . isSelected) current) matched)
-    SetAmount sel amount -> onSelected (amountCheck amount) sel (withAmount amount)
-    SetFormula sel formula -> onSelected (foldMap formulaProblems formula) sel (reformulated formula)
+    SetAmount sel amount -> onSelected (amountCheck amount) (selectFrom sel current) (withAmount amount)
+    SetFormula sel formula -> onSelected (foldMap formulaProblems formula) (selectFrom sel current) (reformulated formula)
+    SetPrice flow price ->
+        (\step -> step{esWarnings = besideDeduced flow price current})
+            <$> onSelected (foldMap priceCheck price) (selectProduct flow current) (priced price)
     -- An added line resolves exactly as a written one does: same provider
     -- lookup, same unit rules, same new-flow warning.
     AddExchange authored -> case resolveOne ctx authored of
@@ -689,12 +704,50 @@ applyOneEdit ctx act edit = case edit of
             , esNewWasteFlows = []
             , esWarnings = []
             }
-    onSelected :: [Text] -> ExchangeSelector -> (Exchange -> Exchange) -> Either [Text] EditStep
-    onSelected complaints sel change = case (complaints, selectFrom sel current) of
+    onSelected :: [Text] -> Either Text (Int, Exchange -> Bool) -> (Exchange -> Exchange) -> Either [Text] EditStep
+    onSelected complaints selection change = case (complaints, selection) of
         ([], Right (matched, isSelected)) ->
             Right (changed (map (\ex -> if isSelected ex then change ex else ex) current) matched)
         (errs, Right _) -> Left errs
         (errs, Left err) -> Left (errs <> [err])
+
+-- | The product outputs of this flow, or why there are none.
+selectProduct :: UUID -> [Exchange] -> Either Text (Int, Exchange -> Bool)
+selectProduct flow current = case length (filter isProduct current) of
+    0 -> Left ("the flow " <> UUID.toText flow <> " is no product output of this activity")
+    matched -> Right (matched, isProduct)
+  where
+    isProduct :: Exchange -> Bool
+    isProduct ex = exchangeIsProductOutput ex && exchangeFlowId ex == flow
+
+-- | A price stated by hand: a finite amount, in a currency it names.
+priceCheck :: StatedAmount -> [Text]
+priceCheck (StatedAmount currency amount) =
+    ["the price is " <> T.pack (show amount) <> "; it must be a finite number, zero or more" | isNaN amount || isInfinite amount || amount < 0]
+        <> ["a price names its currency" | T.null (T.strip currency)]
+
+{- | A stated price set beside a price another product of the block deduced
+from its share: the price key cannot compare the two, so it would refuse the
+block until every product is priced by hand.
+-}
+besideDeduced :: UUID -> Maybe StatedAmount -> [Exchange] -> [Text]
+besideDeduced flow price current =
+    [ "the other products of this activity carry prices deduced from their declared shares, which the price key cannot compare with this one: price each of them"
+    | isJust price
+    , any deducedElsewhere current
+    ]
+  where
+    deducedElsewhere :: Exchange -> Bool
+    deducedElsewhere ex = exchangeIsProductOutput ex && exchangeFlowId ex /= flow && isDeduced (epPrice (exchangeProperties ex))
+    isDeduced :: Maybe Price -> Bool
+    isDeduced = \case
+        Just DeducedFromShare{} -> True
+        _ -> False
+
+priced :: Maybe StatedAmount -> Exchange -> Exchange
+priced price ex = case ex of
+    TechnosphereExchange{techProperties = props} -> ex{techProperties = props{epPrice = StatedPrice <$> price}}
+    _ -> ex
 
 {- | A line given a formula keeps its name, and its amount until the activity
 is restated; a line given none keeps its amount, and a named line its name on
