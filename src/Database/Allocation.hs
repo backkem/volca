@@ -35,6 +35,8 @@ module Database.Allocation (
     allocateWith,
     allocateAll,
     asAllocated,
+    isCoproduct,
+    keptWhole,
     describeRefusal,
     describePropertyRefusal,
     propertyKeyRefusals,
@@ -53,7 +55,7 @@ import Data.List (find, partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Types
@@ -140,7 +142,9 @@ allocateWith Allocating{alKey = key, alUnitConfig = unitCfg, alUnitDB = unitDB} 
         NE.nonEmpty (zipWith (process from) products shares)
   where
     placed :: [(Int, Exchange)]
-    placed = normalise act
+    placed = case key of
+        Unallocated -> deducePrices (normalise act)
+        _ -> normalise act
 
     normalised :: Activity
     normalised = act{exchanges = map snd placed}
@@ -161,6 +165,11 @@ allocateWith Allocating{alKey = key, alUnitConfig = unitCfg, alUnitDB = unitDB} 
         ByProperty prop
             | length products < 2 -> (,) FromSource <$> declaredShares
             | otherwise -> (,) FromProperty <$> propertyKeyShares prop unitCfg unitDB (map snd products)
+        -- A lone product's declared share is the same statement as under a
+        -- property key: nothing else in the file can stand for the half cut away.
+        Unallocated
+            | length products < 2 -> (,) FromSource <$> declaredShares
+            | otherwise -> Nothing
 
     declaredShares :: Maybe [Double]
     declaredShares = map dsPercent <$> traverse (exchangeDeclaredShare . snd) products
@@ -209,6 +218,35 @@ allocateWith Allocating{alKey = key, alUnitConfig = unitCfg, alUnitDB = unitDB} 
         TechnosphereExchange{} -> ex{techShare = Just (DeclaredShare{dsPercent = share, dsFormula = Nothing})}
         BiosphereExchange{} -> ex
         WasteExchange{} -> ex
+
+{- | Give each product row of a block a price deduced from its declared share,
+so that dividing the block by price gives the declared shares back: a row of
+51 % on 3 kg is priced 17 per kilo, and brings in the 51 it was declared.
+
+Only a block whose every product row declares a share and states a non-zero
+amount gets any: one row left out would make the others' prices compare with
+nothing, and the price key then refuses the block by name instead. A row that
+already states a price keeps it, and the price key refuses to compare it with
+the deduced ones beside it.
+-}
+deducePrices :: [(Int, Exchange)] -> [(Int, Exchange)]
+deducePrices placed
+    | all deducible products = map (fmap priced) placed
+    | otherwise = placed
+  where
+    products :: [Exchange]
+    products = filter exchangeIsProductOutput (map snd placed)
+
+    deducible :: Exchange -> Bool
+    deducible ex = isJust (exchangeDeclaredShare ex) && exchangeAmount ex /= 0
+
+    priced :: Exchange -> Exchange
+    priced ex = case (ex, exchangeDeclaredShare ex) of
+        (TechnosphereExchange{techProperties = props}, Just share)
+            | exchangeIsProductOutput ex
+            , isNothing (epPrice props) ->
+                ex{techProperties = props{epPrice = Just (DeducedFromShare (dsPercent share / exchangeAmount ex))}}
+        _ -> ex
 
 -- | Whether the shares a block was split on replace what its source declared.
 data SharesFrom
@@ -268,6 +306,7 @@ reason lives here instead, to be said once by the load that applied the key.
 propertyKeyRefusals :: Allocating -> [Activity] -> [(Text, PropertyRefusal)]
 propertyKeyRefusals Allocating{alKey = key, alUnitConfig = cfg, alUnitDB = unitDB} activities = case key of
     Declared -> []
+    Unallocated -> []
     ByProperty prop -> [(activityName act, refusal) | act <- activities, Left refusal <- [weigh prop act]]
   where
     -- A block of one product is not something a property key answers, so it
@@ -300,6 +339,12 @@ asAllocated act
 -- | What is missing, and what would repair it.
 describeRefusal :: AllocationRefusal -> Text
 describeRefusal refusal = case refusal of
+    -- Every product declares a share and the block is still whole: the key the
+    -- database was read under kept it so, which a missing share cannot repair.
+    UnallocatedOutputs outputs 0 ->
+        T.pack (show outputs)
+            <> " product outputs kept whole by the allocation key this database was read under:"
+            <> " a database derived from it under another key divides them"
     UnallocatedOutputs outputs withoutShare ->
         T.pack (show outputs)
             <> " product outputs, "
@@ -486,6 +531,16 @@ normalise act = promote (filter (keep . snd) (zip [0 ..] (exchanges act)))
     promoteTo single ex
         | exchangeFlowId ex == exchangeFlowId single && exchangeIsProductOutput ex = asReference ex
         | otherwise = ex
+
+{- | Whether a block was kept whole although every product declares a share:
+the key it was read under kept it so, since a missing share is the only thing
+that leaves a block whole under @declared@.
+-}
+keptWhole :: Activity -> Bool
+keptWhole act = any isCoproduct products && all (isJust . exchangeDeclaredShare) products
+  where
+    products :: [Exchange]
+    products = filter exchangeIsProductOutput (exchanges act)
 
 isCoproduct :: Exchange -> Bool
 isCoproduct ex = case ex of

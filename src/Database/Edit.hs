@@ -69,6 +69,7 @@ import System.FilePath ((</>))
 
 import Config (DatabaseConfig (..), licenceOf)
 import Database (Geographies)
+import Database.Allocation (keptWhole)
 import Database.Author (
     ActivityText (..),
     AuthorContext (..),
@@ -129,7 +130,7 @@ import Progress (ProgressLevel (..), reportProgress)
 import qualified Search.BM25 as BM25
 import Service (ActivityFilterCore (..), SearchFilter (..), activityMatches)
 import Types (
-    AllocationKey,
+    AllocationKey (..),
     ClassificationFilter,
     Database (..),
     Parameter,
@@ -272,17 +273,27 @@ blocks and none of them could be weighed, where @0 of 0@ would say it carries
 none at all.
 -}
 dividedRefusal :: AllocationKey -> Text -> Database -> Maybe Text
-dividedRefusal key srcName db
-    | divided > 0 = Nothing
-    | otherwise =
-        Just $
-            allocationKeyText key
-                <> " divided 0 of the "
-                <> T.pack (show (M.size blocks))
-                <> " blocks of "
-                <> srcName
-                <> ": the result would be that database under another name"
+dividedRefusal key srcName db = case key of
+    -- Kept whole rather than divided: a parent worth keeping holds at least
+    -- one block every product of which declares a share, the blocks the
+    -- source's own shares divide. One missing a share is whole under both.
+    Unallocated
+        | any keptWhole (dbActivities db) -> Nothing
+        | otherwise -> Just ("none kept no process of several products whole in " <> srcName <> sameDatabase)
+    _
+        | divided > 0 -> Nothing
+        | otherwise ->
+            Just $
+                allocationKeyText key
+                    <> " divided 0 of the "
+                    <> T.pack (show (M.size blocks))
+                    <> " blocks of "
+                    <> srcName
+                    <> sameDatabase
   where
+    sameDatabase :: Text
+    sameDatabase = ": the result would be that database under another name"
+
     blocks :: M.Map UUID.UUID (NonEmpty ProcessId)
     blocks = dbActivityUUIDIndex db
 
