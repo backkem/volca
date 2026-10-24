@@ -424,6 +424,11 @@
 
 ### Fixed
 
+- Deriving a database under a property key that divides none of its blocks
+  now names the first three blocks it could not divide and the reason, such
+  as a missing dry mass or prices in two currencies, instead of only
+  counting them.
+
 - An EcoSpold 2 input that names no supplying activity is now linked to the
   process of its own database that makes the product it buys, when only one
   process makes it. A product several processes make is still left for a
