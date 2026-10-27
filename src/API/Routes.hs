@@ -1618,7 +1618,10 @@ appears that a client must know about /before/ calling it. Adding a route
 does not exempt a change from the bump: an absent route answers 404, and so
 does a request naming a database the engine has not loaded, so a client
 cannot tell "this engine is too old" from "you asked for the wrong thing"
-(revision 86: the @unchanged@ list of a comparison of two databases, every
+(revision 87: the @setDryMasses@ an edit of an activity's exchanges takes,
+which states the dry mass of a product output, and the @dryMassesSet@ its
+answer gives;
+revision 86: the @unchanged@ list of a comparison of two databases, every
 pair the cascade made that says the same thing on both sides, with its rung;
 revision 85: the body of the @derive@ route, which makes a parent (@parent@) or
 a child divided by a system model (@systemModel@) and no longer reads a source
@@ -1803,7 +1806,7 @@ the whole filtered set).
 Clients compare it to decide compatibility and to gate such capabilities.
 -}
 currentWireVersion :: Int
-currentWireVersion = 86
+currentWireVersion = 87
 
 getVersion :: AppM Value
 getVersion = do

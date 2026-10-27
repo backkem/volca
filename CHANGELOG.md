@@ -4,6 +4,17 @@
 
 ### Added
 
+- An edit of an activity can state the dry mass of its products: each is
+  named by its flow and given the dry mass of one unit of it, in a unit of
+  mass, or its dry mass is removed. This is what a dry mass exception of a
+  system model divides by, for a source that keeps the dry matter of its
+  products in parameters rather than beside each product. A dry mass of zero
+  or less, or in a unit that is not a mass, is refused at the edit. The change
+  is kept in the database's history, and an EcoSpold 2 export carries the dry
+  mass on the product. Wire revision 87.
+
+### Added
+
 - Comparing two databases now also lists the activities that say the same
   thing in both, each with the activity it was paired with and how the pair
   was found, so a script can follow every activity of one database to its
