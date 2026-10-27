@@ -11,6 +11,11 @@
 
 ### Fixed
 
+- Comparing a database with its SimaPro CSV export paired none of its
+  activities: SimaPro writes " U" or " S" after a product's geography, so no
+  product name matched. That mark is now set aside with the geography, when
+  pairing activities by name and lines by flow name.
+
 - A parent answers by itself an input that buys a coproduct of one of its
   blocks kept whole, such as the bran of a wheat milling. Before, such an
   input counted as unresolved, so the parent could not be opened again after
