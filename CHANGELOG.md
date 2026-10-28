@@ -50,6 +50,12 @@
   it, or credit a process the child does not hold, is refused when the child
   is derived. The system model of a child lists its substitutions with the
   names of the processes they take. Wire revision 91.
+- An uploaded database can be renamed, at `PUT /db/{db}/display-name` with
+  the new name as a JSON string, or `set_display_name()` in pyvolca. Only the
+  name it is shown under changes: the name it is addressed by stays, so its
+  links and the databases depending on it keep working. A blank name is
+  refused, and so is a database the configuration file declares, whose name
+  is written there. Wire revision 92.
 
 ### Added
 
