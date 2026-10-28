@@ -13,7 +13,7 @@ import API.DatabaseHandlers (explainCFToAPI, explainedFlowAPI, simpleAction)
 import qualified API.DatabaseHandlers as DBHandlers
 import qualified API.MethodEditHandlers as MethodEdit
 import qualified API.OpenApi
-import API.Types (ActivateResponse (..), ActivityComparison, ActivityContribution (..), ActivityInfo (..), ActivityInput (..), ActivitySummary (..), ActivityWriteRequest (..), ActivityWriteResponse (..), Aggregation (..), BatchImpactsEntry (..), BatchImpactsRequest (..), BatchImpactsResponse (..), BinaryContent (..), CatalogueEntry, CatalogueFingerprint (..), CataloguePage, CategoryEditRequest, ChangesApplied, ChangesPresence, ChangesQuery (..), CharacterizationEntry (..), CharacterizationResult (..), ClassificationEntryInfo (..), ClassificationPresetInfo (..), ClassificationSystem (..), CollectionCoverage (..), CollectionFactors (..), ComputedQualityReportAPI (..), ConsumersResponse (..), ContributingActivitiesResult (..), ContributingFlowsResult (..), CoverageReportAPI (..), CutoffWasteFlow (..), DatabaseComparison, DatabaseExportRequest (..), DatabaseHistoryEntry, DatabaseListResponse, DeleteSelectionRequest (..), DeleteSelectionResponse (..), DeriveRequest (..), ExchangeContribution (..), ExchangeDetail (..), ExchangeEditRequest (..), ExchangeEditResponse (..), ExplainCFResult (..), ExportRequest (..), FactorEditRequest, FactorReading, FlowCFEntry (..), FlowCFMapping (..), FlowContributionEntry (..), FlowDetail (..), FlowFactorsResult (..), FlowSearchResult (..), FlowSummary (..), FormulaCheckRequest, FormulaCheckResponse, FormulaLanguage, FreeParameter (..), GapReportAPI (..), GraphExport (..), HostingInfo (..), InventoryExport (..), LCIABatchResult (..), LCIAResult (..), LoadDatabaseResponse (..), MappingStatus (..), MethodCollectionComparison (..), MethodCollectionListResponse (..), MethodCollectionProfile (..), MethodCollectionStatusAPI (..), MethodDetail (..), MethodEditResponse, MethodFactorAPI (..), MethodFlowAPI, MethodHistoryEntry, MethodSummary (..), ModelBinding (..), ModelEmission (..), ModelInput (..), ModelLine (..), ModelProcess (..), ModelReference (..), ModelScoringSet (..), ModelSupplier (..), ParameterAPI, ParameterName (..), ParameterValue, ParametersEditRequest, ParametersEditResponse, PerturbedEntry (..), ProcessDivisionAPI (..), QualityReportAPI (..), ReducedMethod (..), ReducedModel (..), ReducedModelRequest (..), RefDataListResponse (..), RefDataRowsResponse (..), RelinkRequest (..), RelinkResponse (..), ScenarioAPI, ScenarioSaveRequest, ScorePairs, ScoringEditRequest, ScoringIndicator (..), ScoringSetAPI, SearchCountsAPI (..), SearchResults (..), SensitivityRequest (..), SensitivityResponse (..), SubstitutionRequest (..), SupplyChainResponse (..), SynonymGroupsResponse (..), SystemModelAPI (..), TreeExport (..), UnmappedFlowAPI (..), UploadChunk (..), UploadResponse (..), WithheldShare, apiFlowOfKind, formulaLanguage, parseProducerFilter)
+import API.Types (ActivateResponse (..), ActivityComparison, ActivityContribution (..), ActivityInfo (..), ActivityInput (..), ActivitySummary (..), ActivityWriteRequest (..), ActivityWriteResponse (..), Aggregation (..), BatchImpactsEntry (..), BatchImpactsRequest (..), BatchImpactsResponse (..), BinaryContent (..), CatalogueEntry, CatalogueFingerprint (..), CataloguePage, CategoryEditRequest, ChangesApplied, ChangesPresence, ChangesQuery (..), CharacterizationEntry (..), CharacterizationResult (..), ClassificationEntryInfo (..), ClassificationPresetInfo (..), ClassificationSystem (..), CollectionCoverage (..), CollectionFactors (..), ComputedQualityReportAPI (..), ConsumersResponse (..), ContributingActivitiesResult (..), ContributingFlowsResult (..), CoverageReportAPI (..), CutoffWasteFlow (..), DatabaseComparison, DatabaseExportRequest (..), DatabaseHistoryEntry, DatabaseListResponse, DeleteSelectionRequest (..), DeleteSelectionResponse (..), DeriveRequest (..), ExchangeContribution (..), ExchangeDetail (..), ExchangeEditRequest (..), ExchangeEditResponse (..), ExplainCFResult (..), ExportRequest (..), FactorEditRequest, FactorReading, FlowCFEntry (..), FlowCFMapping (..), FlowContributionEntry (..), FlowDetail (..), FlowFactorsResult (..), FlowSearchResult (..), FlowSummary (..), FormulaCheckRequest, FormulaCheckResponse, FormulaLanguage, FreeParameter (..), GapReportAPI (..), GraphExport (..), HostingInfo (..), InventoryExport (..), LCIABatchResult (..), LCIAResult (..), LoadDatabaseResponse (..), MappingStatus (..), MethodCollectionComparison (..), MethodCollectionListResponse (..), MethodCollectionProfile (..), MethodCollectionStatusAPI (..), MethodDetail (..), MethodEditResponse, MethodFactorAPI (..), MethodFlowAPI, MethodHistoryEntry, MethodSummary (..), ModelBinding (..), ModelEmission (..), ModelInput (..), ModelLine (..), ModelProcess (..), ModelReference (..), ModelScoringSet (..), ModelSupplier (..), ParameterAPI, ParameterName (..), ParameterValue, ParametersEditRequest, ParametersEditResponse, PerturbedEntry (..), ProbableMisses, ProcessDivisionAPI (..), QualityReportAPI (..), ReducedMethod (..), ReducedModel (..), ReducedModelRequest (..), RefDataListResponse (..), RefDataRowsResponse (..), RelinkRequest (..), RelinkResponse (..), ScenarioAPI, ScenarioSaveRequest, ScorePairs, ScoringEditRequest, ScoringIndicator (..), ScoringSetAPI, SearchCountsAPI (..), SearchResults (..), SensitivityRequest (..), SensitivityResponse (..), SubstitutionRequest (..), SupplyChainResponse (..), SynonymGroupsResponse (..), SystemModelAPI (..), TreeExport (..), UnmappedFlowAPI (..), UploadChunk (..), UploadResponse (..), WithheldShare, apiFlowOfKind, formulaLanguage, parseProducerFilter)
 import App.Env (AppEnv (..), AppM, counted, countedEach, runApp)
 import Config (DatabaseConfig (..))
 import qualified Config
@@ -787,10 +787,16 @@ computeCategoryResult dbManager dbName collection db ls cutoffs activity topFlow
         Left err -> pure (Left err)
         Right score -> do
             contribsE <- licencedTopFlows dbManager collection method tables ls score topFlows
-            pure (fmap (result stats score functionalUnit) contribsE)
+            -- A miss carries an amount of the inventory: read from the part the
+            -- licences let be detailed, and kept whole by a dependency keeping its amounts.
+            inventoryWithheld <- Impact.withheldDatabases dbManager ReadInventory sol
+            let misses
+                    | null inventoryWithheld = Service.missesShown mUnits score (Method.Mapping.probableMisses mFlows tables (SharedSolver.csInventory (Impact.lsShown ls)))
+                    | otherwise = Service.missesWithheld inventoryWithheld
+            pure (fmap (result stats score functionalUnit misses) contribsE)
   where
-    result :: MappingStats -> Double -> Text -> TopFlows -> LCIAResult
-    result stats score functionalUnit TopFlows{tfRows = topContributors, tfWithheld = withheld} =
+    result :: MappingStats -> Double -> Text -> ProbableMisses -> TopFlows -> LCIAResult
+    result stats score functionalUnit misses TopFlows{tfRows = topContributors, tfWithheld = withheld} =
         LCIAResult
             { lrMethodId = methodId method
             , lrMethodName = methodName method
@@ -808,6 +814,7 @@ computeCategoryResult dbManager dbName collection db ls cutoffs activity topFlow
             , lrCutoffInputs = cutoffShown cutoffs
             , lrWithheldCutoffs = cutoffWithheld cutoffs
             , lrExchangeContributions = []
+            , lrProbableMisses = Just misses
             }
 
 -- | The flows a score publishes, and the line of each dependency that keeps its detail.
@@ -931,6 +938,7 @@ buildLCIABatchResultCached dbManager dbName collectionName db actPid activity co
                     , lrCutoffInputs = cutoffShown cutoffs
                     , lrWithheldCutoffs = cutoffWithheld cutoffs
                     , lrExchangeContributions = []
+                    , lrProbableMisses = Nothing
                     }
     resultsE <- sequence <$> traverse mkResultIO ctxs
     case resultsE of
@@ -1642,7 +1650,9 @@ appears that a client must know about /before/ calling it. Adding a route
 does not exempt a change from the bump: an absent route answers 404, and so
 does a request naming a database the engine has not loaded, so a client
 cannot tell "this engine is too old" from "you asked for the wrong thing"
-(revision 96: the row of a child's delivery sheet for one process, the
+(revision 97: the @probableMisses@ of a score, the flows it read no factor for
+although its method writes their substance elsewhere in their medium;
+revision 96: the row of a child's delivery sheet for one process, the
 parent's process it was cut from, its share and its rule, at
 @GET /db/{db}/activity/{processId}/division@;
 revision 95: the @usage@ clause of an own licence and of the terms a reader
@@ -1851,7 +1861,7 @@ the whole filtered set).
 Clients compare it to decide compatibility and to gate such capabilities.
 -}
 currentWireVersion :: Int
-currentWireVersion = 96
+currentWireVersion = 97
 
 getVersion :: AppM Value
 getVersion = do
@@ -2293,7 +2303,7 @@ activityLCIACore dbName processIdText collectionName methodIdText topFlowsParam 
         result <- either scoringError pure resultE
         when (isNothing mSub) $ liftIO $ logLCIAResult result method
         licence <- DBHandlers.servedLicence dbName
-        pure (Service.withholdContributors dbName licence result)
+        pure (Service.withholdMisses dbName licence (Service.withholdContributors dbName licence result))
 
 getActivityLCIA :: Text -> Text -> DM.CollectionName -> Text -> Maybe Int -> AppM LCIAResult
 getActivityLCIA dbName processIdText collectionName methodIdText topFlowsParam =
