@@ -73,6 +73,8 @@ module API.DatabaseHandlers (
     uploadRefData,
     getFlowSynonymGroupsHandler,
     downloadRefDataHandler,
+    refDataRowsHandler,
+    refDataRows,
 
     -- * Helpers
     convertDbStatus,
@@ -99,6 +101,7 @@ import Control.Monad.Catch (finally)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Csv as Csv
 import Data.List (isPrefixOf, unsnoc)
 import qualified Data.Map as M
 import Data.Text (Text)
@@ -107,7 +110,7 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
 import Data.Word (Word64)
 import Network.HTTP.Types.URI (urlEncode)
-import Servant (Header, Headers, ServerError, SourceIO, addHeader, err400, err403, err404, err409, err413, err500, errBody, throwError)
+import Servant (Header, Headers, ServerError, SourceIO, addHeader, err400, err403, err404, err409, err413, err422, err500, errBody, throwError)
 import qualified Servant.Types.SourceT as S
 import qualified System.Directory
 import System.FilePath ((</>))
@@ -159,6 +162,7 @@ import API.Types (
     QualityOffenderAPI (..),
     QualityReportAPI (..),
     RefDataListResponse (..),
+    RefDataRowsResponse (..),
     RefDataStatusAPI (..),
     RelinkRequest (..),
     RelinkResponse (..),
@@ -1798,6 +1802,37 @@ getFlowSynonymGroupsHandler name = do
 
 downloadRefDataHandler :: RefDataKind -> Text -> AppM (Headers '[Header "Content-Disposition" Text] BinaryContent)
 downloadRefDataHandler kind name = do
+    content <- refDataSource kind name
+    let disposition = "attachment; filename=\"" <> name <> ".csv\""
+    return $ addHeader disposition (BinaryContent content)
+
+-- | A reference table's rows as its CSV says them, loaded or not.
+refDataRowsHandler :: RefDataKind -> Text -> AppM RefDataRowsResponse
+refDataRowsHandler kind name = do
+    content <- refDataSource kind name
+    either (\err -> throwError err422{errBody = BSL.fromStrict (T.encodeUtf8 err)}) pure (refDataRows content)
+
+{- | The header and rows of a reference CSV, all as wide as the widest of
+them: a short row ends in empty cells (the compartments' @kind@ column is
+optional), and a row wider than its header widens the header with empty
+titles, since the synonym and compartment loaders never compare a row to the
+header and take such a table.
+-}
+refDataRows :: BSL.ByteString -> Either Text RefDataRowsResponse
+refDataRows content =
+    either (Left . ("CSV parse error: " <>) . T.pack) (Right . table . V.toList) (Csv.decode Csv.NoHeader content)
+  where
+    table :: [[Text]] -> RefDataRowsResponse
+    table [] = RefDataRowsResponse [] []
+    table (header : rows) = RefDataRowsResponse (fitTo header) (map fitTo rows)
+      where
+        width = foldr (max . length) 0 (header : rows)
+        fitTo :: [Text] -> [Text]
+        fitTo cells = cells <> replicate (width - length cells) ""
+
+-- | The CSV a reference table was read from, the built-in one included.
+refDataSource :: RefDataKind -> Text -> AppM BSL.ByteString
+refDataSource kind name = do
     dbManager <- asks aeDbManager
     let tvar = case kind of
             FlowSynonyms -> dmAvailableFlowSyns dbManager
@@ -1806,13 +1841,9 @@ downloadRefDataHandler kind name = do
     available <- liftIO $ readTVarIO tvar
     case M.lookup name available of
         Nothing -> throwError $ err404{errBody = "Not found"}
-        Just rd -> do
-            bytes <- liftIO $ readRefDataSource (rdSource rd)
-            case bytes of
-                Left _ -> throwError $ err404{errBody = "CSV file not found"}
-                Right content -> do
-                    let disposition = "attachment; filename=\"" <> name <> ".csv\""
-                    return $ addHeader disposition (BinaryContent content)
+        Just rd ->
+            liftIO (readRefDataSource (rdSource rd))
+                >>= either (const (throwError err404{errBody = "CSV file not found"})) pure
 
 -- | The flow an explanation is about, as the cascade sees it.
 explainedFlowAPI :: Database -> BiosphereFlow -> ExplainedFlowAPI
