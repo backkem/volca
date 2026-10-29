@@ -11,7 +11,7 @@
   gave it (the default key, an exception and its reason, a substitution and
   its reason). The same row, for one process, is at
   `GET /db/{db}/activity/{processId}/division`, which answers null for a
-  process the model leaves as it was. It names the parent by the
+  process the model leaves as it was (wire revision 95). It names the parent by the
   SHA-256 digests of its source files, of the patches applied to them and of
   its journal of changes, and the division as an action of the engine, with
   its version, on the parent and the model, as the Process Run Crate profile

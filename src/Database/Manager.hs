@@ -3074,8 +3074,11 @@ systemModelOf manager dbName = do
 
 {- | The row of a child's delivery sheet for one of its processes, with the
 parent it names: Nothing for a database read from its files, or a process its
-model left as the parent has it. A parent unloaded since is not loaded again
-for it: reading a page is no reason to spend minutes loading a database.
+model left as the parent has it. Left when the model cannot be read against
+the parent as now loaded, for every process alike: the parent unloaded, or
+edited so that a process the model names is gone. A parent unloaded since is
+not loaded again for it: reading a page is no reason to spend minutes loading
+a database.
 -}
 processTraced :: DatabaseManager -> LoadedDatabase -> (UUID, UUID) -> IO (Either Text (Maybe (DatabaseConfig, Traced)))
 processTraced manager ld key = do

@@ -1991,11 +1991,15 @@ getActivityInfo dbName processId = counted Reading dbName (ProcessKey processId)
         Error err -> throwError err500{errBody = BSL.fromStrict $ T.encodeUtf8 $ T.pack err}
 
 {- | The row of a child's delivery sheet for one process: null for a process
-its model left as the parent has it, or a database read from its files. A
-parent unloaded since the child was divided is a 400 that says so.
+its model left as the parent has it, or a database read from its files. A 400
+says why the model cannot be read against the parent as it is now loaded: the
+parent unloaded since the child was divided, or edited so that a process the
+model names is gone. Refused under a licence that keeps the inventory, since
+the share is the ratio of the block's amounts.
 -}
 getProcessDivision :: Text -> Text -> AppM (Maybe ProcessDivisionAPI)
 getProcessDivision dbName processId = counted Reading dbName (ProcessKey processId) $ do
+    DBHandlers.refuseUnlessGranted ReadInventory dbName
     dbManager <- asks aeDbManager
     ld <- liftIO (getDatabase dbManager dbName) >>= maybe (throwError err404{errBody = databaseNotLoadedBody dbName}) pure
     (pid, _) <- either throwServiceError pure (Service.resolveActivityAndProcessId (ldDatabase ld) processId)
