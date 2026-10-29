@@ -9,16 +9,20 @@ import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as M
+import Data.Maybe (isNothing)
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import Data.Time.Calendar (fromGregorian)
+import qualified Data.UUID as UUID
 import Test.Hspec
 
 import Config (DatabaseConfig (..))
 import Database.Crate
+import Database.SystemModel (Rule (..), Traced (..), parseSystemModel)
 import Database.Upload (DatabaseFormat (..))
-import Types (Acceptance (..), Attribution (..), Disclosure (..), FileReading (..), GeographyPolicy (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Release (..), StandardLicence (..), UsageCount (..))
+import Types (Acceptance (..), AllocationProperty (..), Attribution (..), Disclosure (..), FileReading (..), GeographyPolicy (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Reason (..), Release (..), StandardLicence (..), UsageCount (..))
 import Zip (zipFiles)
 
 ecoinvent :: Release
@@ -34,7 +38,39 @@ input licence =
         , ciRequires = [ecoinvent]
         , ciFormat = EcoSpold2
         , ciChanges = Nothing
+        , ciMadeFrom = ReadFrom sources
         }
+
+sources :: Identity
+sources = Identity{idFiles = "f11e5", idPatches = Nothing, idJournal = Just "j0a1", idReading = "none"}
+
+modelText :: Text
+modelText = "# Cheese apart\nname = \"Dairy\"\nversion = \"1.0.0\"\n[allocation]\ndefault = \"price\"\n"
+
+-- | A child of the bread's own sources, one piece of a dairy block traced.
+division :: Division
+division =
+    Division
+        { dvParent = "Bread parent"
+        , dvParentIdentity = sources
+        , dvJournal = Nothing
+        , dvModel = either (error . T.unpack) id (parseSystemModel modelText)
+        , dvEngine = "0.16.1"
+        , dvMade = Nothing
+        , dvTrace = [Traced{trProcess = (UUID.nil, UUID.nil), trActivity = "Dairy", trProduct = "Whey, \"sweet\"", trShare = Just 23.4, trRule = Divided WetMass (Just (Reason "Dairies weigh their milk.")) []}]
+        }
+
+-- | Every @\@id@ an entity of the graph refers to, the entities' own left out.
+references :: Value -> [Text]
+references (Object o) = case KM.lookup "@graph" o of
+    Just (Array graph) -> concat [concatMap inside (KM.elems (KM.delete "@id" fields)) | Object fields <- foldr (:) [] graph]
+    _ -> []
+  where
+    inside :: Value -> [Text]
+    inside (Object r) | Just (String target) <- KM.lookup "@id" r, KM.size r == 1 = [target]
+    inside (Array vs) = concatMap inside (foldr (:) [] vs)
+    inside _ = []
+references _ = []
 
 payload :: BL.ByteString
 payload = "the export, byte for byte"
@@ -158,6 +194,40 @@ spec = do
 
         it "reads back as its export alone, requiring no more than it did" $
             fmap (\p -> (pkPayload p, pkLicence p, pkRequires p)) <$> openPackage packaged `shouldBe` Right (Just (payload, own, [ecoinvent]))
+
+    describe "a child's package" $ do
+        let modified = (input LicenceUnstated){ciChanges = Just Changes{chReport = "# Changes to Bread\n", chOriginal = "bakery", chOriginalRelease = Nothing}}
+            child = modified{ciMadeFrom = DividedFrom division}
+            packaged = packageExport "bread" child payload
+            metadata = crateMetadata "bread" child payload
+            parentMetadata = crateMetadata "bread-parent" modified payload
+        it "carries the model as its author wrote it, and the table of each piece" $ do
+            let archive = toArchive packaged
+            filesInArchive archive `shouldMatchList` ["ro-crate-metadata.json", "payload/bread.zip", "CHANGES.md", "system-model.toml", "allocation.csv"]
+            fromEntry <$> findEntryByPath "system-model.toml" archive `shouldBe` Just (BL.fromStrict (T.encodeUtf8 modelText))
+            fromEntry <$> findEntryByPath "allocation.csv" archive
+                `shouldBe` Just
+                    ( "process_id,activity,product,share_percent,rule\r\n"
+                        <> "00000000-0000-0000-0000-000000000000_00000000-0000-0000-0000-000000000000,Dairy,\"Whey, \"\"sweet\"\"\",23.4,\"wet mass, exception: Dairies weigh their milk.\"\r\n"
+                    )
+
+        it "names the parent by the same digests as the parent's own package" $ do
+            (entity "#parent-files-sha256" metadata >>= field "value") `shouldBe` Just (String "f11e5")
+            (entity "#parent-journal-sha256" metadata >>= field "value") `shouldBe` Just (String "j0a1")
+            (entity "#files-sha256" parentMetadata >>= field "value") `shouldBe` Just (String "f11e5")
+            (entity "#journal-sha256" parentMetadata >>= field "value") `shouldBe` Just (String "j0a1")
+
+        it "describes its division as a Process Run Crate action of the engine on the parent and the model" $ do
+            (entity "./" metadata >>= field "conformsTo") `shouldBe` Just (toJSON (KM.singleton "@id" (String "https://w3id.org/ro/wfrun/process/0.5")))
+            (entity "#division" metadata >>= field "instrument") `shouldBe` Just (toJSON (KM.singleton "@id" (String "#engine")))
+            (entity "#division" metadata >>= field "object") `shouldBe` Just (toJSON [KM.singleton "@id" (String "#parent"), KM.singleton "@id" (String "system-model.toml")])
+            (entity "#engine" metadata >>= field "softwareVersion") `shouldBe` Just (String "0.16.1")
+
+        it "refers only to entities its graph holds" $
+            filter (\target -> isNothing (entity target metadata) && not (T.isPrefixOf "https://" target)) (references metadata) `shouldBe` []
+
+        it "reads back as its export alone" $
+            fmap pkPayload <$> openPackage packaged `shouldBe` Right (Just payload)
 
     describe "openPackage" $ do
         let packaged licence = packageExport "bread" (input licence) payload

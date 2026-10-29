@@ -13,6 +13,11 @@ context itself so a reader does not depend on the published context carrying it.
 module Database.Crate (
     CrateInput (..),
     Changes (..),
+    MadeFrom (..),
+    Identity (..),
+    Division (..),
+    modelFile,
+    traceFile,
     Packaging (..),
     parsePackaging,
     requiredReleases,
@@ -44,11 +49,15 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Data.Time.Calendar (Day)
+import Data.Time.Clock (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import qualified Data.UUID as UUID
+import Numeric (showFFloat)
 
 import Config (DatabaseConfig (..))
+import Database.SystemModel (Traced (..), ruleText)
 import Database.Upload (DatabaseFormat (..), formatDisplayText)
-import Types (Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), Release (..), StandardLicence, StandardTerms (..), acceptanceAsked, countedDisclosure, licenceFromKeys, licenceUsage, permissionCode, spdxId, standardTerms)
+import Types (Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), Release (..), StandardLicence, StandardTerms (..), SystemModel (..), acceptanceAsked, countedDisclosure, licenceFromKeys, licenceUsage, permissionCode, spdxId, standardTerms)
 import Zip (zipFiles)
 
 -- | How an export is handed over: the bytes alone, or packaged with their description.
@@ -93,6 +102,39 @@ data CrateInput = CrateInput
     , ciFormat :: !DatabaseFormat
     , ciChanges :: !(Maybe Changes)
     -- ^ What was changed, for a database whose data differ from its original
+    , ciMadeFrom :: !MadeFrom
+    }
+
+{- | What a database was made from, named by digest so a reader can tell two
+deliveries of it apart: its own files, or a parent and the model dividing it.
+-}
+data MadeFrom
+    = ReadFrom !Identity
+    | DividedFrom !Division
+
+{- | A database read from files, by SHA-256 digest: the files, the patches its
+configuration applies to them, and its journal of changes, with the reading
+of their shares. A digest left out is a part the database does not have.
+-}
+data Identity = Identity
+    { idFiles :: !Text
+    , idPatches :: !(Maybe Text)
+    , idJournal :: !(Maybe Text)
+    , idReading :: !Text
+    }
+
+{- | A child, made from its parent by a system model. The parent's package
+carries the same identity, and its changes.
+-}
+data Division = Division
+    { dvParent :: !Text
+    , dvParentIdentity :: !Identity
+    , dvJournal :: !(Maybe Text)
+    -- ^ The child's own journal of changes, made after the division
+    , dvModel :: !SystemModel
+    , dvEngine :: !Text
+    , dvMade :: !(Maybe UTCTime)
+    , dvTrace :: ![Traced]
     }
 
 {- | What a modified database's package says of its changes: the report listing
@@ -109,9 +151,32 @@ data Changes = Changes
 metadataFile :: FilePath
 metadataFile = "ro-crate-metadata.json"
 
-changesFile, licenceFile :: FilePath
+changesFile, licenceFile, modelFile, traceFile :: FilePath
 changesFile = "CHANGES.md"
 licenceFile = "LICENCE.txt"
+modelFile = "system-model.toml"
+traceFile = "allocation.csv"
+
+{- | The table tracing a child's processes back to the parent's blocks, one row
+each, as RFC 4180 CSV.
+-}
+traceCsv :: [Traced] -> Text
+traceCsv rows = T.concat (map line (header : map cells rows))
+  where
+    header :: [Text]
+    header = ["process_id", "activity", "product", "share_percent", "rule"]
+
+    cells :: Traced -> [Text]
+    cells Traced{trProcess = (activityId, productId), ..} =
+        [UUID.toText activityId <> "_" <> UUID.toText productId, trActivity, trProduct, maybe "" (\s -> T.pack (showFFloat Nothing s "")) trShare, ruleText trRule]
+
+    line :: [Text] -> Text
+    line fields = T.intercalate "," (map quoted fields) <> "\r\n"
+
+    quoted :: Text -> Text
+    quoted field
+        | T.any (`elem` [',', '"', '\r', '\n']) field = "\"" <> T.replace "\"" "\"\"" field <> "\""
+        | otherwise = field
 
 -- | The licence in plain words, for a reader who opens no JSON.
 licenceText :: Licence -> Maybe Text
@@ -122,10 +187,16 @@ licenceText = \case
 
 -- | The files beside the export and its description, each with its content.
 companions :: CrateInput -> [(FilePath, Text)]
-companions input = case ciChanges input of
-    -- An unchanged database's package keeps the one file engines already read.
-    Nothing -> []
-    Just changes -> (changesFile, chReport changes) : [(licenceFile, text) | Just text <- [licenceText (ciLicence input)]]
+companions input = changed <> divided
+  where
+    changed = case ciChanges input of
+        -- An unchanged database's package keeps the one file engines already read.
+        Nothing -> []
+        Just changes -> (changesFile, chReport changes) : [(licenceFile, text) | Just text <- [licenceText (ciLicence input)]]
+    -- The model as its author wrote it, comments and all, never written again from what was read.
+    divided = case ciMadeFrom input of
+        ReadFrom _ -> []
+        DividedFrom division -> [(modelFile, smText (dvModel division)), (traceFile, traceCsv (dvTrace division))]
 
 -- | Where the export sits in the package, and what kind of file it is.
 data Payload = Payload
@@ -171,7 +242,7 @@ crateMetadata :: Text -> CrateInput -> BL.ByteString -> Value
 crateMetadata name input payload =
     object
         [ "@context" .= [A.String "https://w3id.org/ro/crate/1.2/context", object ["sha256" .= ("https://w3id.org/ro/terms#sha256" :: Text)]]
-        , "@graph" .= (descriptor : root : file : map companion (companions input) <> licenceEntities (ciName input) (ciLicence input) <> concat (zipWith releaseEntities [0 ..] (ciRequires input)) <> foldMap originalEntities (ciChanges input))
+        , "@graph" .= (descriptor : root : file : map companion (companions input) <> licenceEntities (ciName input) (ciLicence input) <> concat (zipWith releaseEntities [0 ..] (ciRequires input)) <> foldMap originalEntities (ciChanges input) <> madeFromEntities)
         ]
   where
     Payload{payloadFile = path, payloadMediaType = mediaType} = payloadOf name (ciFormat input)
@@ -198,6 +269,19 @@ crateMetadata name input payload =
                 <> ["isBasedOn" .= refs (map releaseId [0 .. length (ciRequires input) - 1]) | not (null (ciRequires input))]
                 <> ["citation" .= ref originalId | Just _ <- [ciChanges input]]
                 <> maybe [] (\l -> ["license" .= ref l]) (licenceId (ciLicence input))
+                <> case ciMadeFrom input of
+                    ReadFrom identity -> ["additionalProperty" .= refs (fst (identityProperties "#" identity))]
+                    DividedFrom division ->
+                        ["conformsTo" .= ref processRunCrate, "mentions" .= ref divisionId]
+                            <> ["additionalProperty" .= ref ownJournalId | Just _ <- [dvJournal division]]
+
+    madeFromEntities :: [Value]
+    madeFromEntities = case ciMadeFrom input of
+        ReadFrom identity -> snd (identityProperties "#" identity)
+        DividedFrom division -> divisionEntities path division <> [property ownJournalId "journal sha256" (A.String digest) | Just digest <- [dvJournal division]]
+
+    ownJournalId :: Text
+    ownJournalId = "#journal-sha256"
 
     file :: Value
     file =
@@ -226,12 +310,27 @@ crateMetadata name input payload =
 
     companion :: (FilePath, Text) -> Value
     companion (companionPath, text) =
-        object
+        object $
             [ "@id" .= companionPath
             , "@type" .= ("File" :: Text)
-            , "encodingFormat" .= (if companionPath == changesFile then "text/markdown" else "text/plain" :: Text)
-            , "contentSize" .= show (BS.length (T.encodeUtf8 text))
+            , "encodingFormat" .= mediaTypeOf companionPath
+            , "contentSize" .= show (BS.length bytes)
+            , "sha256" .= digestOf (BL.fromStrict bytes)
             ]
+                <> ["description" .= traceDescription | companionPath == traceFile]
+      where
+        bytes = T.encodeUtf8 text
+
+    mediaTypeOf :: FilePath -> Text
+    mediaTypeOf companionPath
+        | companionPath == changesFile = "text/markdown"
+        | companionPath == modelFile = "application/toml"
+        | companionPath == traceFile = "text/csv"
+        | otherwise = "text/plain"
+
+    traceDescription :: Text
+    traceDescription =
+        "Each process of this child that comes from a block of its parent, with its share and the rule that gave it, and each share below 100 the source declared on a process of one product. Any other process is the parent's as it stands. A block left whole is listed once, under its reference product."
 
 originalId :: Text
 originalId = "#original"
@@ -243,6 +342,66 @@ originalEntities changes =
         ["@id" .= originalId, "@type" .= ("Dataset" :: Text), "name" .= maybe (chOriginal changes) releaseName (chOriginalRelease changes)]
             <> ["version" .= releaseVersion release | Just release <- [chOriginalRelease changes]]
     ]
+
+{- | An identity as properties, each id under the prefix, and the ids the
+holder refers to them by.
+-}
+identityProperties :: Text -> Identity -> ([Text], [Value])
+identityProperties prefix identity = (map fst named, map (\(propertyId, (name, value)) -> property propertyId name (A.String value)) named)
+  where
+    named :: [(Text, (Text, Text))]
+    named =
+        [ (prefix <> slug, (name, value))
+        | (slug, name, Just value) <-
+            [ ("files-sha256", "files sha256", Just (idFiles identity))
+            , ("patches-sha256", "patches sha256", idPatches identity)
+            , ("journal-sha256", "journal sha256", idJournal identity)
+            , ("reading", "reading", Just (idReading identity))
+            ]
+        ]
+
+divisionId, parentId, engineId, processRunCrate :: Text
+divisionId = "#division"
+parentId = "#parent"
+engineId = "#engine"
+processRunCrate = "https://w3id.org/ro/wfrun/process/0.5"
+
+{- | The division of a child as a Process Run Crate action: the engine, given
+the parent and the model, made the export and its table.
+-}
+divisionEntities :: FilePath -> Division -> [Value]
+divisionEntities payloadPath division =
+    [ object $
+        [ "@id" .= divisionId
+        , "@type" .= ("CreateAction" :: Text)
+        , "name" .= ("Division of " <> dvParent division <> " by the system model " <> smName model <> " " <> smVersion model)
+        , "instrument" .= ref engineId
+        , "object" .= refs [parentId, T.pack modelFile]
+        , "result" .= refs [T.pack payloadPath, T.pack traceFile]
+        ]
+            <> ["startTime" .= iso8601Show made | Just made <- [dvMade division]]
+    , object
+        [ "@id" .= engineId
+        , "@type" .= ("SoftwareApplication" :: Text)
+        , "name" .= ("VoLCA" :: Text)
+        , "url" .= ("https://volca.run" :: Text)
+        , "softwareVersion" .= dvEngine division
+        ]
+    , object
+        [ "@id" .= parentId
+        , "@type" .= ("Dataset" :: Text)
+        , "name" .= dvParent division
+        , "description" .= ("The parent this child was divided from, named by the digests of its files, of the patches applied to them and of its journal of changes. The parent's own package carries the same digests, and lists its changes." :: Text)
+        , "additionalProperty" .= refs ids
+        ]
+    , object ["@id" .= processRunCrate, "@type" .= ("CreativeWork" :: Text), "name" .= ("Process Run Crate" :: Text), "version" .= ("0.5" :: Text)]
+    ]
+        <> parentProperties
+  where
+    model :: SystemModel
+    model = dvModel division
+
+    (ids, parentProperties) = identityProperties (parentId <> "-") (dvParentIdentity division)
 
 ref :: Text -> Value
 ref target = object ["@id" .= target]

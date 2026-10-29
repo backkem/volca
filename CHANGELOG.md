@@ -4,6 +4,19 @@
 
 ### Added
 
+- The package of a database divided by a system model (`package: ro-crate`)
+  is its delivery sheet. It holds the model file as its author wrote it, and
+  `allocation.csv`, one row per process that comes from a block of the
+  parent: its share and the rule that gave it (the default key, an exception
+  and its reason, a substitution and its reason). It names the parent by the
+  SHA-256 digests of its source files, of the patches applied to them and of
+  its journal of changes, and the division as an action of the engine, with
+  its version, on the parent and the model, as the Process Run Crate profile
+  describes one. The package of any other database carries its own digests,
+  so a child's package and its parent's can be matched. The digest of a
+  directory of sources is the one
+  `find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum | sha256sum`
+  prints there.
 - A batch of activities can be scored under one method of a collection, at
   `POST /db/{db}/impacts/{collection}/{methodId}`, with the same body and
   answer as the whole collection. Characterization costs per method, so one
