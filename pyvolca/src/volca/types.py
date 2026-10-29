@@ -549,7 +549,7 @@ class LCIAResult:
     to the score. Empty otherwise, and when the database's licence keeps its
     detail or its inventory to itself."""
     probable_misses: ProbableMisses | None = None
-    """The flows the score probably missed (wire revision 90); ``None`` in a
+    """The flows the score probably missed (wire revision 97); ``None`` in a
     batch of activities, which does not look for them."""
 
     @classmethod

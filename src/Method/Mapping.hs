@@ -3919,13 +3919,14 @@ A flow a regionalized table holds is characterized, and has none.
 -}
 siblingLines :: UnitConfig -> UnitDB -> MethodTables -> BiosphereFlow -> Maybe SiblingLines
 siblingLines unitConfig unitDB tables flow
-    | placeKnown || regional || null found = Nothing
-    | otherwise =
+    | placeKnown || regional = Nothing
+    | f : fs <- map snd found =
         Just
             SiblingLines
                 { slWrittenAt = S.toAscList (S.fromList (map fst found))
-                , slFactor = snd (foldr1 (\a b -> if abs (snd a) >= abs (snd b) then a else b) found)
+                , slFactor = foldl' (\a b -> if abs b > abs a then b else a) f fs
                 }
+    | otherwise = Nothing
   where
     (med, own) = flowMediumSub (mtCompartmentMap tables) flow
     readings = map snd (subReadings (mtIfAbsent tables) med own)

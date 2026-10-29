@@ -1341,7 +1341,10 @@ amount of the inventory, so a licence keeping those keeps the misses.
 withholdMisses :: Text -> Licence -> LCIAResult -> LCIAResult
 withholdMisses dbName licence result
     | granted licence ReadInventory = result
-    | otherwise = result{lrProbableMisses = missesWithheld [dbName] <$ lrProbableMisses result}
+    | otherwise = result{lrProbableMisses = withheldToo <$> lrProbableMisses result}
+  where
+    -- The database asked comes first, before the dependencies already keeping theirs.
+    withheldToo misses = missesWithheld (dbName : pmsWithheld misses)
 
 -- | The probable misses of a score as a reply carries them: the ten biggest worth saying.
 missesShown :: UnitDB -> Double -> [Mapping.ProbableMiss] -> ProbableMisses
