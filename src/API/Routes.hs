@@ -1638,7 +1638,10 @@ appears that a client must know about /before/ calling it. Adding a route
 does not exempt a change from the bump: an absent route answers 404, and so
 does a request naming a database the engine has not loaded, so a client
 cannot tell "this engine is too old" from "you asked for the wrong thing"
-(revision 94: describing an uploaded database, or clearing its description,
+(revision 95: the @usage@ clause of an own licence and of the terms a reader
+accepts, and the @counted@ releases of a usage line, each with what its
+publisher sees of the reader;
+revision 94: describing an uploaded database, or clearing its description,
 at @PUT /db/{db}/description@;
 revision 93: the @rows@ of a reference table, and the download of a
 compartment mapping;
@@ -1841,7 +1844,7 @@ the whole filtered set).
 Clients compare it to decide compatibility and to gate such capabilities.
 -}
 currentWireVersion :: Int
-currentWireVersion = 94
+currentWireVersion = 95
 
 getVersion :: AppM Value
 getVersion = do

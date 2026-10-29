@@ -71,7 +71,7 @@ refused :: Licence
 refused = membersOnly
 
 keys :: LicenceKeys
-keys = LicenceKeys Nothing Nothing Nothing Nothing Nothing
+keys = LicenceKeys Nothing Nothing Nothing Nothing Nothing Nothing
 
 -- | A manager holding one upload with its meta.toml, and a copy of it.
 withUpload :: (DatabaseManager -> FilePath -> IO ()) -> IO ()

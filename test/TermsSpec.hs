@@ -36,10 +36,10 @@ import qualified Method.Types as M
 import Types
 
 termsOf :: Text -> Licence
-termsOf text = LicenceOwn OwnLicence{ownText = text, ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked}
+termsOf text = LicenceOwn OwnLicence{ownText = text, ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked NotCounted}
 
 keys :: LicenceKeys
-keys = LicenceKeys Nothing Nothing Nothing Nothing Nothing
+keys = LicenceKeys Nothing Nothing Nothing Nothing Nothing Nothing
 
 fingerprintOf :: Licence -> Text
 fingerprintOf = fromMaybe (error "no fingerprint") . licenceFingerprint
@@ -68,9 +68,42 @@ spec = do
         it "is refused on a standard licence, which is not adjusted" $
             (decode (encode (object ["kind" .= ("standard" :: Text), "id" .= ("CC-BY-4.0" :: Text), "accept" .= True])) :: Maybe Licence) `shouldBe` Nothing
 
+    describe "the usage key" $ do
+        it "counts the computations of readers who accept the terms" $
+            (licenceUsage <$> licenceFromKeys keys{lkText = Just "Ours", lkAccept = Just True, lkUsage = Just "organizations"}) `shouldBe` Right (Counted ReadersNamed)
+
+        it "counts nothing when the terms say nothing" $
+            licenceUsage (termsOf "Ours") `shouldBe` NotCounted
+
+        it "is refused without acceptance, which would count readers who never saw it" $ do
+            licenceFromKeys keys{lkText = Just "Ours", lkUsage = Just "anonymous"} `shouldSatisfy` isLeft'
+            licenceFromKeys keys{lkText = Just "Ours", lkAccept = Just False, lkUsage = Just "anonymous"} `shouldSatisfy` isLeft'
+
+        it "is refused when it names no known counting" $
+            licenceFromKeys keys{lkText = Just "Ours", lkAccept = Just True, lkUsage = Just "everyone"} `shouldSatisfy` isLeft'
+
+        it "is written back as it was read" $ do
+            let counted = LicenceOwn OwnLicence{ownText = "Ours", ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked (Counted ReadersAnonymous)}
+            licenceFromKeys (licenceKeys counted) `shouldBe` Right counted
+            decode (encode counted) `shouldBe` Just counted
+
+        it "is refused on a standard licence, which is not adjusted" $
+            (decode (encode (object ["kind" .= ("standard" :: Text), "id" .= ("CC-BY-4.0" :: Text), "usage" .= ("anonymous" :: Text)])) :: Maybe Licence) `shouldBe` Nothing
+
+        it "is shown with the terms a reader accepts" $
+            map termsUsage (termsAsked [("ei", LicenceOwn OwnLicence{ownText = "Ours", ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked (Counted ReadersNamed)})]) `shouldBe` [Just ReadersNamed]
+
     describe "licenceFingerprint" $ do
         it "changes with the text, so new terms are asked again" $
             fingerprintOf (termsOf "Ours") `shouldNotBe` fingerprintOf (termsOf "Ours, revised")
+
+        it "stays the hash of the text alone when nothing is counted, so earlier acceptances hold" $
+            fingerprintOf (termsOf "Ours") `shouldBe` "db031768f8774819"
+
+        it "changes with the counting, so a reader accepts a new clause again" $ do
+            let counting usage = LicenceOwn OwnLicence{ownText = "Ours", ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked usage}
+            fingerprintOf (counting (Counted ReadersAnonymous)) `shouldNotBe` fingerprintOf (counting NotCounted)
+            fingerprintOf (counting (Counted ReadersNamed)) `shouldNotBe` fingerprintOf (counting (Counted ReadersAnonymous))
 
         it "is absent when the licence asks nothing" $ do
             licenceFingerprint (LicenceStandard CCBY) `shouldBe` Nothing
@@ -103,7 +136,7 @@ spec = do
                 `shouldBe` ["mine", "bafu"]
 
     describe "termsMiddleware" $ do
-        let terms = [Terms "bafu" "Ours" "f1"]
+        let terms = [Terms "bafu" "Ours" "f1" Nothing]
             asked names = pure (if "bafu" `elem` names then terms else [])
         it "refuses a reader who has not accepted the terms, with them" $ do
             (status, body) <- through asked methodGet ["api", "v1", "db", "bafu", "activities"] [] ""

@@ -1804,7 +1804,11 @@ class Client:
         ``licence`` names one by its ``kind``: ``{"kind": "standard", "id":
         "CC-BY-4.0"}`` for a standard licence (:meth:`licences` lists them),
         ``{"kind": "own", "text": ..., "refused": ["download", ...],
-        "attribution": True}`` for an own one, or ``{"kind": "unstated"}``. A
+        "attribution": True, "accept": True, "usage": "anonymous"}`` for an
+        own one, or ``{"kind": "unstated"}``. ``usage`` counts the computations
+        made on the database for its publisher, ``"anonymous"`` or with each
+        reader's ``"organizations"``; it needs ``accept``, since readers accept
+        the clause with the text, and is left out to count nothing. A
         licence this returns can be sent back as it came. A database whose
         licence refuses ``download`` answers :meth:`export_database` and
         :meth:`document_file` with a 403, and so does every copy of it.

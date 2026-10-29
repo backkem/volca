@@ -74,6 +74,21 @@
   (its name, description or licence text) is now escaped, so the file stays
   valid TOML.
 
+### Changed
+
+- The usage log counts a computation only when the terms of use of the
+  database it read ask for it. Before, every database that declared its
+  release was counted, without its readers being told. An own licence now
+  carries the clause `usage`: `"anonymous"` counts the computations for the
+  publisher, and `"organizations"` also gives each reader's organization and
+  email domain. The clause needs `accept = true`, because readers accept it
+  with the text. The terms a reader is asked to accept carry it too, through
+  REST and MCP alike. Terms that count nothing keep the fingerprint they had,
+  so acceptances already given stay valid. A clause that is added or changed
+  is asked again. A usage line now lists its `counted` releases, each with
+  its `disclosure`. `reads` still lists the same releases alone, until 0.17.
+  Wire revision 95.
+
 ### Added
 
 - Comparing two databases now also lists the activities that say the same

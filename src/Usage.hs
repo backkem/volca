@@ -5,10 +5,12 @@
 
 {- | What the engine was used for, kept for whoever runs it to collect.
 
-Each computation on a process of a database that declares its release leaves
-one line: which kind of computation, which process and what the database
-calls it, which releases it read, and the reader the request named, if any. A database without a declared
-release leaves nothing, since nothing would say whose data was read.
+Each computation on a process of a database that declares its release, and
+whose terms ask its computations to be counted, leaves one line: which kind of
+computation, which process and what the database calls it, which releases it
+read, and the reader the request named, if any. Any other database leaves
+nothing: without a release nothing would say whose data was read, and without
+the clause, accepted by its readers, nobody asked for them to be counted.
 
 The lines are held in memory, not in a file: a collector reads them as they
 come and then tells the engine to forget what it kept, so a file would only
@@ -63,7 +65,7 @@ import Servant (FromHttpApiData, ToHttpApiData)
 
 import API.JsonOptions (Stripped (..))
 import Progress (ProgressLevel (..), reportProgress)
-import Types (Release, codeSchema, parseCode)
+import Types (CountedRelease (..), Release, codeSchema, parseCode)
 
 -- | What a computation did with the process it was asked about.
 data UsageKind
@@ -139,8 +141,10 @@ data UsageLine = UsageLine
     -- ^ What the database calls the process; none when the database no longer holds it
     , ulReader :: !(Maybe Text)
     -- ^ Whoever the request said it was made for, as the server in front of the engine named them
+    , ulCounted :: !(NonEmpty CountedRelease)
+    -- ^ The database's own release when its terms ask it counted, then those of the databases it depends on
     , ulReads :: !(NonEmpty Release)
-    -- ^ The database's own release when it has one, then those of the databases it depends on
+    -- ^ The same releases without what their publishers see; kept for the collectors that read only this, until 0.17
     }
     deriving (Show, Eq, Generic)
     deriving (ToJSON, FromJSON, ToSchema) via (Stripped UsageLine)
@@ -218,13 +222,13 @@ readerOf = fmap TE.decodeUtf8Lenient . lookup readerHeader
 
 -- | What the engine knows of the database and the process a computation ran on.
 data Lookup = Lookup
-    { releasesOf :: Text -> IO [Release]
-    -- ^ The releases a database reads: its own, then those of the databases it depends on
+    { releasesOf :: Text -> IO [CountedRelease]
+    -- ^ The releases a database reads and is counted for: its own, then those of the databases it depends on
     , namingOf :: Text -> ProcessKey -> IO (Maybe ProcessNaming)
     }
 
 {- | Keep a line for a computation, when the database it ran on, or one it
-depends on, declares a release.
+depends on, declares a release its terms ask to be counted.
 -}
 recordUse :: UsageLog -> Lookup -> Maybe Text -> Use -> IO ()
 recordUse lg known reader use = do
@@ -232,7 +236,7 @@ recordUse lg known reader use = do
     forM_ (nonEmpty releases) $ \readReleases -> do
         naming <- namingOf known (useDatabase use) (useProcess use)
         now <- getCurrentTime
-        recordLine lg (\n -> UsageLine n now (useKind use) (useDatabase use) (useProcess use) naming reader readReleases)
+        recordLine lg (\n -> UsageLine n now (useKind use) (useDatabase use) (useProcess use) naming reader readReleases (fmap crRelease readReleases))
 
 recordLine :: UsageLog -> (Int -> UsageLine) -> IO ()
 recordLine lg mkLine = do

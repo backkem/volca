@@ -38,7 +38,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Either (partitionEithers)
 import Data.List (find)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, maybeToList)
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -48,7 +48,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 
 import Config (DatabaseConfig (..))
 import Database.Upload (DatabaseFormat (..), formatDisplayText)
-import Types (Acceptance (..), Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), Release (..), StandardLicence, StandardTerms (..), licenceFromKeys, permissionCode, spdxId, standardTerms)
+import Types (Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), Release (..), StandardLicence, StandardTerms (..), acceptanceAsked, countedDisclosure, licenceFromKeys, licenceUsage, permissionCode, spdxId, standardTerms)
 import Zip (zipFiles)
 
 -- | How an export is handed over: the bytes alone, or packaged with their description.
@@ -300,23 +300,26 @@ licenceEntities _ (LicenceStandard l) =
         , "name" .= stName (standardTerms l)
         ]
     ]
-licenceEntities name (LicenceOwn own) =
+licenceEntities name licence@(LicenceOwn own) =
     [ object
         [ "@id" .= ownLicenceId
         , "@type" .= ("CreativeWork" :: Text)
         , "name" .= ("Licence of " <> name)
         , "description" .= ownText own
-        , "additionalProperty" .= refs [refusesId, attributionId, acceptId]
+        , "additionalProperty" .= refs ([refusesId, attributionId, acceptId] <> (usageId <$ maybeToList usage))
         ]
     , property refusesId "refuses" (A.toJSON (map permissionCode (S.toList (ownRefused own))))
     , property attributionId "attribution" (A.Bool (ownAttribution own == AttributionRequired))
-    , property acceptId "accept" (A.Bool (ownAcceptance own == AcceptanceAsked))
+    , property acceptId "accept" (A.Bool (acceptanceAsked (ownAcceptance own)))
     ]
+        <> [property usageId "usage" (A.toJSON d) | d <- maybeToList usage]
   where
-    refusesId, attributionId, acceptId :: Text
+    usage = countedDisclosure (licenceUsage licence)
+    refusesId, attributionId, acceptId, usageId :: Text
     refusesId = ownLicenceId <> "-refuses"
     attributionId = ownLicenceId <> "-attribution"
     acceptId = ownLicenceId <> "-accept"
+    usageId = ownLicenceId <> "-usage"
 
 digestOf :: BL.ByteString -> Text
 digestOf payload = T.pack (show (hashlazy payload :: Digest SHA256))
@@ -369,11 +372,11 @@ described = A.withObject "RO-Crate description" $ \o -> do
         properties e = traverse entity =<< maybe (pure []) refsOf =<< e .:? "additionalProperty"
         licenceOf :: Text -> Parser LicenceKeys
         licenceOf target = case T.stripPrefix spdxPrefix target of
-            Just spdx -> pure (LicenceKeys (Just spdx) Nothing Nothing Nothing Nothing)
+            Just spdx -> pure (LicenceKeys (Just spdx) Nothing Nothing Nothing Nothing Nothing)
             Nothing -> do
                 own <- entity target
                 props <- properties own
-                LicenceKeys Nothing <$> (Just <$> own .: "description") <*> propertyValue "refuses" props <*> propertyValue "attribution" props <*> propertyValue "accept" props
+                LicenceKeys Nothing <$> (Just <$> own .: "description") <*> propertyValue "refuses" props <*> propertyValue "attribution" props <*> propertyValue "accept" props <*> propertyValue "usage" props
         releaseOf :: Text -> Parser Release
         releaseOf target = do
             dataset <- entity target
@@ -387,7 +390,7 @@ described = A.withObject "RO-Crate description" $ \o -> do
     file <- entity path
     Described (T.unpack path)
         <$> file .: "sha256"
-        <*> (maybe (pure (LicenceKeys Nothing Nothing Nothing Nothing Nothing)) (licenceOf <=< refOf) =<< root .:? "license")
+        <*> (maybe (pure (LicenceKeys Nothing Nothing Nothing Nothing Nothing Nothing)) (licenceOf <=< refOf) =<< root .:? "license")
         <*> (maybe (pure []) (traverse releaseOf <=< refsOf) =<< root .:? "isBasedOn")
 
 -- | The value of the property of that name, when there is one.
