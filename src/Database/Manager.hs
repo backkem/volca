@@ -3064,47 +3064,56 @@ its parent, model and the trace of each process back to the parent's blocks;
 any other database, its own sources.
 -}
 madeFrom :: DatabaseManager -> LoadedDatabase -> IO (Either Text MadeFrom)
-madeFrom manager ld = do
-    configs <- readTVarIO (dmAvailableDbs manager)
+madeFrom manager ld = runExceptT $ do
+    configs <- liftIO $ readTVarIO (dmAvailableDbs manager)
     case dcReading config of
-        FromFiles _ -> Right . ReadFrom <$> sourcesIdentity configs config
-        ByModel model ->
-            modelOnParent manager configs config model >>= \case
-                Left err -> pure (Left err)
-                Right (onParent, parent) -> do
-                    parentIdentity <- sourcesIdentity configs (ldConfig parent)
-                    journal <- journalDigest config
-                    pure $
-                        Right $
-                            DividedFrom
-                                Division
-                                    { dvParent = dcDisplayName (ldConfig parent)
-                                    , dvParentIdentity = parentIdentity
-                                    , dvJournal = journal
-                                    , dvModel = model
-                                    , dvEngine = T.pack (Version.version <> " (" <> Version.gitHash <> ")")
-                                    , dvMade = (\(AddedAt at) -> at) <$> dcAdded config
-                                    , dvTrace = traceOf onParent (ldDatabase parent) (ldDatabase ld)
-                                    }
+        FromFiles _ -> ReadFrom <$> ExceptT (sourcesIdentity configs config)
+        ByModel model -> do
+            -- The parent may have been unloaded since the child was divided: loaded again, it is the one the child was divided from.
+            mapM_ (ExceptT . loadDatabase manager) (parentOf configs config)
+            (onParent, parent) <- ExceptT (modelOnParent manager configs config model)
+            parentIdentity <- ExceptT (sourcesIdentity configs (ldConfig parent))
+            journal <- liftIO (journalDigest config)
+            pure $
+                DividedFrom
+                    Division
+                        { dvParent = dcDisplayName (ldConfig parent)
+                        , dvParentIdentity = parentIdentity
+                        , dvJournal = journal
+                        , dvModel = model
+                        , dvEngine = T.pack (Version.version <> " (" <> Version.gitHash <> ")")
+                        , dvMade = (\(AddedAt at) -> at) <$> dcAdded config
+                        , dvTrace = traceOf onParent (ldDatabase parent) (ldDatabase ld)
+                        }
   where
     config :: DatabaseConfig
     config = ldConfig ld
 
 {- | A database read from files, by digest: the files of the database owning
 them, the patches its configuration applies, its own journal, and how it
-reads their shares.
+reads their shares. Sources no longer on disk, as when only the cache was
+shipped, are refused by name: the package could not say what it was read from.
+
+The patches are digested as the engine reads them: they are declared in a
+configuration, and no text of them is kept to digest instead.
 -}
-sourcesIdentity :: M.Map Text DatabaseConfig -> DatabaseConfig -> IO Identity
+sourcesIdentity :: M.Map Text DatabaseConfig -> DatabaseConfig -> IO (Either Text Identity)
 sourcesIdentity configs config = do
-    files <- sourcesDigest (dcPath (filesOwner configs config))
-    journal <- journalDigest config
-    pure
-        Identity
-            { idFiles = files
-            , idPatches = if null (dcPatches config) then Nothing else Just (textDigest (T.pack (show (dcPatches config))))
-            , idJournal = journal
-            , idReading = allocationKeyText (readingKey (dcReading config))
-            }
+    let path = dcPath (filesOwner configs config)
+    present <- (||) <$> doesFileExist path <*> doesDirectoryExist path
+    if not present
+        then pure (Left ("The sources of " <> dcName config <> " are not on disk (" <> T.pack path <> "): its package names them by their digest."))
+        else do
+            files <- sourcesDigest path
+            journal <- journalDigest config
+            pure $
+                Right
+                    Identity
+                        { idFiles = files
+                        , idPatches = if null (dcPatches config) then Nothing else Just (textDigest (T.pack (show (dcPatches config))))
+                        , idJournal = journal
+                        , idReading = allocationKeyText (readingKey (dcReading config))
+                        }
 
 -- | The digest of a database's journal, when it records a change.
 journalDigest :: DatabaseConfig -> IO (Maybe Text)

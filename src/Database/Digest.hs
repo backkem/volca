@@ -12,18 +12,18 @@ module Database.Digest (
 import Control.Exception (evaluate)
 import Crypto.Hash (Digest, SHA256, hash, hashlazy)
 import qualified Data.ByteString.Lazy as BL
-import Data.List (sortOn)
+import Data.List (intercalate, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import System.Directory (doesDirectoryExist)
-import System.FilePath (makeRelative, (</>))
+import System.FilePath (makeRelative, splitDirectories, (</>))
 
 import Database.Upload (listDirectoryRecursive)
 
 {- | A file: the digest of its bytes. A directory: the digest of the listing
 @sha256sum@ prints for its files, their paths relative to it and sorted byte
-by byte, the same as
+by byte and written with @/@ on every system, the same as
 
 > find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum | sha256sum
 
@@ -38,7 +38,7 @@ sourcesDigest path = do
     if not isDirectory
         then fileDigest path
         else do
-            files <- sortOn (T.encodeUtf8 . T.pack) . map (makeRelative path) <$> listDirectoryRecursive path
+            files <- sortOn (T.encodeUtf8 . T.pack) . map (intercalate "/" . splitDirectories . makeRelative path) <$> listDirectoryRecursive path
             listing <- traverse (\file -> (\digest -> digest <> "  " <> T.pack file <> "\n") <$> fileDigest (path </> file)) files
             pure (textDigest (T.concat listing))
 

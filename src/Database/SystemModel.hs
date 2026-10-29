@@ -414,7 +414,7 @@ data Rule
 
 ruleText :: Rule -> Text
 ruleText = \case
-    KeptWhole prop -> "kept whole: a product has no " <> propertyName prop
+    KeptWhole prop -> "kept whole: its products cannot be weighed by " <> propertyName prop
     Divided prop exception substitutions ->
         propertyName prop
             <> maybe ", default key" ((", exception: " <>) . reasonText) exception
