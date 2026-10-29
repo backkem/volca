@@ -57,7 +57,7 @@ division =
         , dvModel = either (error . T.unpack) id (parseSystemModel modelText)
         , dvEngine = "0.16.1"
         , dvMade = Nothing
-        , dvTrace = [Traced{trProcess = (UUID.nil, UUID.nil), trActivity = "Dairy", trProduct = "Whey, \"sweet\"", trShare = Just 23.4, trRule = Divided WetMass (Just (Reason "Dairies weigh their milk.")) []}]
+        , dvTrace = [Traced{trProcess = (UUID.nil, UUID.nil), trParent = (UUID.nil, UUID.nil), trActivity = "Dairy", trProduct = "Whey, \"sweet\"", trShare = Just 23.4, trRule = Divided WetMass (Just (Reason "Dairies weigh their milk.")) []}]
         }
 
 -- | Every @\@id@ an entity of the graph refers to, the entities' own left out.
@@ -207,8 +207,8 @@ spec = do
             fromEntry <$> findEntryByPath "system-model.toml" archive `shouldBe` Just (BL.fromStrict (T.encodeUtf8 modelText))
             fromEntry <$> findEntryByPath "allocation.csv" archive
                 `shouldBe` Just
-                    ( "process_id,activity,product,share_percent,rule\r\n"
-                        <> "00000000-0000-0000-0000-000000000000_00000000-0000-0000-0000-000000000000,Dairy,\"Whey, \"\"sweet\"\"\",23.4,\"wet mass, exception: Dairies weigh their milk.\"\r\n"
+                    ( "process_id,parent_process_id,activity,product,share_percent,rule\r\n"
+                        <> "00000000-0000-0000-0000-000000000000_00000000-0000-0000-0000-000000000000,00000000-0000-0000-0000-000000000000_00000000-0000-0000-0000-000000000000,Dairy,\"Whey, \"\"sweet\"\"\",23.4,\"wet mass, exception: Dairies weigh their milk.\"\r\n"
                     )
 
         it "names the parent by the same digests as the parent's own package" $ do

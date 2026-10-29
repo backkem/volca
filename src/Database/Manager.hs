@@ -116,6 +116,7 @@ module Database.Manager (
     parentOf,
     systemModelOf,
     madeFrom,
+    processTraced,
     termsToAccept,
     acceptedTerms,
     acceptTerms,
@@ -210,7 +211,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Database.Crate (Division (..), Identity (..), MadeFrom (..))
 import Database.Digest (fileDigest, sourcesDigest, textDigest)
-import Database.SystemModel (ModelOnParent, takenProcesses, traceOf)
+import Database.SystemModel (ModelOnParent, Traced (..), takenProcesses, traceOf)
 import GHC.Generics (Generic)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile)
 import System.FilePath (addTrailingPathSeparator, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
@@ -3077,6 +3078,23 @@ systemModelOf manager dbName = do
         Just config -> case dcReading config of
             ByModel model -> fmap fst <$> modelOnParent manager configs config model
             FromFiles _ -> pure (Left (dbName <> " is read from its files, not divided from a parent by a system model"))
+
+{- | The row of a child's delivery sheet for one of its processes, with the
+parent it names: Nothing for a database read from its files, or a process its
+model left as the parent has it. Left when the model cannot be read against
+the parent as now loaded, for every process alike: the parent unloaded, or
+edited so that a process the model names is gone. A parent unloaded since is
+not loaded again for it: reading a page is no reason to spend minutes loading
+a database.
+-}
+processTraced :: DatabaseManager -> LoadedDatabase -> (UUID, UUID) -> IO (Either Text (Maybe (DatabaseConfig, Traced)))
+processTraced manager ld key = do
+    configs <- readTVarIO (dmAvailableDbs manager)
+    case dcReading (ldConfig ld) of
+        FromFiles _ -> pure (Right Nothing)
+        ByModel model ->
+            fmap (\(onParent, parent) -> (ldConfig parent,) <$> find ((== key) . trProcess) (traceOf onParent (ldDatabase parent) (ldDatabase ld)))
+                <$> modelOnParent manager configs (ldConfig ld) model
 
 -- | A child's model read against its loaded parent, and that parent.
 modelOnParent :: DatabaseManager -> M.Map Text DatabaseConfig -> DatabaseConfig -> SystemModel -> IO (Either Text (ModelOnParent, LoadedDatabase))

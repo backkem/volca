@@ -13,8 +13,9 @@ import API.DatabaseHandlers (explainCFToAPI, explainedFlowAPI, simpleAction)
 import qualified API.DatabaseHandlers as DBHandlers
 import qualified API.MethodEditHandlers as MethodEdit
 import qualified API.OpenApi
-import API.Types (ActivateResponse (..), ActivityComparison, ActivityContribution (..), ActivityInfo (..), ActivityInput (..), ActivitySummary (..), ActivityWriteRequest (..), ActivityWriteResponse (..), Aggregation (..), BatchImpactsEntry (..), BatchImpactsRequest (..), BatchImpactsResponse (..), BinaryContent (..), CatalogueEntry, CatalogueFingerprint (..), CataloguePage, CategoryEditRequest, ChangesApplied, ChangesPresence, ChangesQuery (..), CharacterizationEntry (..), CharacterizationResult (..), ClassificationEntryInfo (..), ClassificationPresetInfo (..), ClassificationSystem (..), CollectionCoverage (..), CollectionFactors (..), ComputedQualityReportAPI (..), ConsumersResponse (..), ContributingActivitiesResult (..), ContributingFlowsResult (..), CoverageReportAPI (..), CutoffWasteFlow (..), DatabaseComparison, DatabaseExportRequest (..), DatabaseHistoryEntry, DatabaseListResponse, DeleteSelectionRequest (..), DeleteSelectionResponse (..), DeriveRequest (..), ExchangeContribution (..), ExchangeDetail (..), ExchangeEditRequest (..), ExchangeEditResponse (..), ExplainCFResult (..), ExportRequest (..), FactorEditRequest, FactorReading, FlowCFEntry (..), FlowCFMapping (..), FlowContributionEntry (..), FlowDetail (..), FlowFactorsResult (..), FlowSearchResult (..), FlowSummary (..), FormulaCheckRequest, FormulaCheckResponse, FormulaLanguage, FreeParameter (..), GapReportAPI (..), GraphExport (..), HostingInfo (..), InventoryExport (..), LCIABatchResult (..), LCIAResult (..), LoadDatabaseResponse (..), MappingStatus (..), MethodCollectionComparison (..), MethodCollectionListResponse (..), MethodCollectionProfile (..), MethodCollectionStatusAPI (..), MethodDetail (..), MethodEditResponse, MethodFactorAPI (..), MethodFlowAPI, MethodHistoryEntry, MethodSummary (..), ModelBinding (..), ModelEmission (..), ModelInput (..), ModelLine (..), ModelProcess (..), ModelReference (..), ModelScoringSet (..), ModelSupplier (..), ParameterAPI, ParameterName (..), ParameterValue, ParametersEditRequest, ParametersEditResponse, PerturbedEntry (..), QualityReportAPI (..), ReducedMethod (..), ReducedModel (..), ReducedModelRequest (..), RefDataListResponse (..), RefDataRowsResponse (..), RelinkRequest (..), RelinkResponse (..), ScenarioAPI, ScenarioSaveRequest, ScorePairs, ScoringEditRequest, ScoringIndicator (..), ScoringSetAPI, SearchCountsAPI (..), SearchResults (..), SensitivityRequest (..), SensitivityResponse (..), SubstitutionRequest (..), SupplyChainResponse (..), SynonymGroupsResponse (..), SystemModelAPI (..), TreeExport (..), UnmappedFlowAPI (..), UploadChunk (..), UploadResponse (..), WithheldShare, apiFlowOfKind, formulaLanguage, parseProducerFilter)
+import API.Types (ActivateResponse (..), ActivityComparison, ActivityContribution (..), ActivityInfo (..), ActivityInput (..), ActivitySummary (..), ActivityWriteRequest (..), ActivityWriteResponse (..), Aggregation (..), BatchImpactsEntry (..), BatchImpactsRequest (..), BatchImpactsResponse (..), BinaryContent (..), CatalogueEntry, CatalogueFingerprint (..), CataloguePage, CategoryEditRequest, ChangesApplied, ChangesPresence, ChangesQuery (..), CharacterizationEntry (..), CharacterizationResult (..), ClassificationEntryInfo (..), ClassificationPresetInfo (..), ClassificationSystem (..), CollectionCoverage (..), CollectionFactors (..), ComputedQualityReportAPI (..), ConsumersResponse (..), ContributingActivitiesResult (..), ContributingFlowsResult (..), CoverageReportAPI (..), CutoffWasteFlow (..), DatabaseComparison, DatabaseExportRequest (..), DatabaseHistoryEntry, DatabaseListResponse, DeleteSelectionRequest (..), DeleteSelectionResponse (..), DeriveRequest (..), ExchangeContribution (..), ExchangeDetail (..), ExchangeEditRequest (..), ExchangeEditResponse (..), ExplainCFResult (..), ExportRequest (..), FactorEditRequest, FactorReading, FlowCFEntry (..), FlowCFMapping (..), FlowContributionEntry (..), FlowDetail (..), FlowFactorsResult (..), FlowSearchResult (..), FlowSummary (..), FormulaCheckRequest, FormulaCheckResponse, FormulaLanguage, FreeParameter (..), GapReportAPI (..), GraphExport (..), HostingInfo (..), InventoryExport (..), LCIABatchResult (..), LCIAResult (..), LoadDatabaseResponse (..), MappingStatus (..), MethodCollectionComparison (..), MethodCollectionListResponse (..), MethodCollectionProfile (..), MethodCollectionStatusAPI (..), MethodDetail (..), MethodEditResponse, MethodFactorAPI (..), MethodFlowAPI, MethodHistoryEntry, MethodSummary (..), ModelBinding (..), ModelEmission (..), ModelInput (..), ModelLine (..), ModelProcess (..), ModelReference (..), ModelScoringSet (..), ModelSupplier (..), ParameterAPI, ParameterName (..), ParameterValue, ParametersEditRequest, ParametersEditResponse, PerturbedEntry (..), ProcessDivisionAPI (..), QualityReportAPI (..), ReducedMethod (..), ReducedModel (..), ReducedModelRequest (..), RefDataListResponse (..), RefDataRowsResponse (..), RelinkRequest (..), RelinkResponse (..), ScenarioAPI, ScenarioSaveRequest, ScorePairs, ScoringEditRequest, ScoringIndicator (..), ScoringSetAPI, SearchCountsAPI (..), SearchResults (..), SensitivityRequest (..), SensitivityResponse (..), SubstitutionRequest (..), SupplyChainResponse (..), SynonymGroupsResponse (..), SystemModelAPI (..), TreeExport (..), UnmappedFlowAPI (..), UploadChunk (..), UploadResponse (..), WithheldShare, apiFlowOfKind, formulaLanguage, parseProducerFilter)
 import App.Env (AppEnv (..), AppM, counted, countedEach, runApp)
+import Config (DatabaseConfig (..))
 import qualified Config
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.QSem (signalQSem, waitQSem)
@@ -55,6 +56,7 @@ import Database.Journal (noteFrom)
 import Database.Manager (DatabaseManager (..), DatabaseSetupInfo (..), LoadedDatabase (..), getDatabase, getMergedUnitConfig)
 import qualified Database.Manager as DM
 import Database.Requirements (ReleaseSubstitution)
+import Database.SystemModel (Traced (..), ruleText)
 import EcoSpold.Common (acrossCapabilities)
 import qualified Expr
 import GHC.Generics
@@ -95,6 +97,8 @@ type LCAAPI =
     "api"
         :> "v1"
         :> ( "db" :> Capture "dbName" Text :> "activity" :> Capture "processId" Text :> Get '[JSON] ActivityInfo
+                -- Where a process of a child comes from: its row of the delivery sheet, or null
+                :<|> "db" :> Capture "dbName" Text :> "activity" :> Capture "processId" Text :> "division" :> Get '[JSON] (Maybe ProcessDivisionAPI)
                 :<|> "db" :> Capture "dbName" Text :> "activity" :> Capture "processId" Text :> "flows" :> Get '[JSON] [FlowSummary]
                 :<|> "db" :> Capture "dbName" Text :> "activity" :> Capture "processId" Text :> "inputs" :> Get '[JSON] [ExchangeDetail]
                 :<|> "db" :> Capture "dbName" Text :> "activity" :> Capture "processId" Text :> "outputs" :> Get '[JSON] [ExchangeDetail]
@@ -1638,7 +1642,10 @@ appears that a client must know about /before/ calling it. Adding a route
 does not exempt a change from the bump: an absent route answers 404, and so
 does a request naming a database the engine has not loaded, so a client
 cannot tell "this engine is too old" from "you asked for the wrong thing"
-(revision 95: the @usage@ clause of an own licence and of the terms a reader
+(revision 96: the row of a child's delivery sheet for one process, the
+parent's process it was cut from, its share and its rule, at
+@GET /db/{db}/activity/{processId}/division@;
+revision 95: the @usage@ clause of an own licence and of the terms a reader
 accepts, and the @counted@ releases of a usage line, each with what its
 publisher sees of the reader;
 revision 94: describing an uploaded database, or clearing its description,
@@ -1844,7 +1851,7 @@ the whole filtered set).
 Clients compare it to decide compatibility and to gate such capabilities.
 -}
 currentWireVersion :: Int
-currentWireVersion = 95
+currentWireVersion = 96
 
 getVersion :: AppM Value
 getVersion = do
@@ -1985,6 +1992,34 @@ getActivityInfo dbName processId = counted Reading dbName (ProcessKey processId)
     case fromJSON result of
         Success activityInfo -> return (Service.withholdExchangeAmounts dbName licence activityInfo)
         Error err -> throwError err500{errBody = BSL.fromStrict $ T.encodeUtf8 $ T.pack err}
+
+{- | The row of a child's delivery sheet for one process: null for a process
+its model left as the parent has it, or a database read from its files. A 400
+says why the model cannot be read against the parent as it is now loaded: the
+parent unloaded since the child was divided, or edited so that a process the
+model names is gone. Refused under a licence that keeps the inventory, since
+the share is the ratio of the block's amounts.
+-}
+getProcessDivision :: Text -> Text -> AppM (Maybe ProcessDivisionAPI)
+getProcessDivision dbName processId = counted Reading dbName (ProcessKey processId) $ do
+    DBHandlers.refuseUnlessGranted ReadInventory dbName
+    dbManager <- asks aeDbManager
+    ld <- liftIO (getDatabase dbManager dbName) >>= maybe (throwError err404{errBody = databaseNotLoadedBody dbName}) pure
+    (pid, _) <- either throwServiceError pure (Service.resolveActivityAndProcessId (ldDatabase ld) processId)
+    ref <- maybe (throwError err404{errBody = "Process out of range: " <> BSL.fromStrict (T.encodeUtf8 processId)}) pure (processIdToRef (ldDatabase ld) pid)
+    traced <- liftIO (DM.processTraced dbManager ld (prActivity ref, prProduct ref))
+    either (\err -> throwError err400{errBody = BSL.fromStrict (T.encodeUtf8 err)}) (pure . fmap division) traced
+  where
+    division :: (DatabaseConfig, Traced) -> ProcessDivisionAPI
+    division (parent, traced) =
+        ProcessDivisionAPI
+            { pdaParentDatabase = dcName parent
+            , pdaParentName = dcDisplayName parent
+            , pdaParentProcessId = processRefText (uncurry ProcessRef (trParent traced))
+            , pdaParentActivity = trActivity traced
+            , pdaShare = trShare traced
+            , pdaRule = ruleText (trRule traced)
+            }
 
 getActivityFlows :: Text -> Text -> AppM [FlowSummary]
 getActivityFlows dbName processId = counted Reading dbName (ProcessKey processId) $ do
@@ -3377,6 +3412,7 @@ lcaServer env = hoistServer lcaAPI (runApp env) handlers
   where
     handlers =
         getActivityInfo
+            :<|> getProcessDivision
             :<|> getActivityFlows
             :<|> getActivityInputs
             :<|> getActivityOutputs

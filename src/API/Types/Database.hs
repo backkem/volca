@@ -430,6 +430,21 @@ data ModelSubstitutionAPI = ModelSubstitutionAPI
     deriving (Generic)
     deriving (ToJSON, FromJSON, ToSchema) via (Stripped ModelSubstitutionAPI)
 
+{- | Where one process of a child comes from, as its delivery sheet says: the
+parent's process it was cut from, in the parent named by its slug and the name
+it is shown under; its share, absent for a block left whole; and the rule.
+-}
+data ProcessDivisionAPI = ProcessDivisionAPI
+    { pdaParentDatabase :: Text
+    , pdaParentName :: Text
+    , pdaParentProcessId :: Text
+    , pdaParentActivity :: Text
+    , pdaShare :: Maybe Double
+    , pdaRule :: Text
+    }
+    deriving (Generic)
+    deriving (ToJSON, FromJSON, ToSchema) via (Stripped ProcessDivisionAPI)
+
 {- | Response for the load database endpoint. A failure is an HTTP error. The
 @"tag": "LoadSucceeded"@ the answer carried when it could also be a failure
 stays on the wire for clients that still read it, until 0.16.0.

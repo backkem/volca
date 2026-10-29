@@ -282,6 +282,10 @@ routeSpecs = do
             resp <- doGet b "/api/v1/db/no-such-db/activity/whatever"
             statusCode (responseStatus resp) `shouldBe` 404
 
+        it "GET /api/v1/db/no-such-db/activity/whatever/division returns 404" $ \b -> do
+            resp <- doGet b "/api/v1/db/no-such-db/activity/whatever/division"
+            statusCode (responseStatus resp) `shouldBe` 404
+
         it "GET /api/v1/db/no-such-db/gap-report returns 404" $ \b -> do
             -- The gap report answers only for a loaded or staged database.
             resp <- doGet b "/api/v1/db/no-such-db/gap-report"
