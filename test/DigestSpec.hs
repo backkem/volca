@@ -3,12 +3,13 @@
 -- | Tests for the digests a package names a database's sources by ('Database.Digest').
 module DigestSpec (spec) where
 
+import Control.Exception (IOException, try)
 import qualified Data.ByteString.Char8 as BS
+import Data.List (isInfixOf)
 import qualified Data.Text as T
 import System.Directory (createDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Info (os)
 import System.Process (readProcess)
 import Test.Hspec
 
@@ -34,9 +35,11 @@ spec = describe "sourcesDigest" $ do
                 command <- readProcess "sha256sum" [dir </> "a.csv"] ""
                 sourcesDigest (dir </> "a.csv") `shouldReturn` T.pack (takeWhile (/= ' ') command)
   where
-    -- The command is GNU's: macOS and Windows have neither its find nor sha256sum.
+    -- The command is GNU's: macOS, Windows and busybox have neither its find nor its xargs.
     onGnu :: IO () -> IO ()
-    onGnu test = if os == "linux" then test else pendingWith "needs GNU find and sha256sum"
+    onGnu test = do
+        version <- try (readProcess "find" ["--version"] "") :: IO (Either IOException String)
+        if either (const False) ("GNU findutils" `isInfixOf`) version then test else pendingWith "needs GNU find and sha256sum"
 
     withSources :: (FilePath -> IO ()) -> IO ()
     withSources k = withSystemTempDirectory "digest" $ \dir -> do
