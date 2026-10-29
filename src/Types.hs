@@ -2911,7 +2911,13 @@ newtype DisplayName = DisplayName {displayNameText :: Text}
 
 -- | The name with the spaces around it dropped, or nothing when only spaces are left.
 mkDisplayName :: Text -> Maybe DisplayName
-mkDisplayName = fmap DisplayName . mfilter (not . T.null) . Just . T.strip
+mkDisplayName = fmap DisplayName . nonBlankText
+
+{- | A text without the spaces around it, or nothing when only spaces are left,
+so that a blank value and none are one state.
+-}
+nonBlankText :: Text -> Maybe Text
+nonBlankText = mfilter (not . T.null) . Just . T.strip
 
 instance FromJSON DisplayName where
     parseJSON = withText "DisplayName" (maybe (fail "A database's name cannot be blank") pure . mkDisplayName)

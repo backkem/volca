@@ -14,7 +14,7 @@ import Test.Hspec
 import API.DatabaseHandlers (licenceRefusal)
 import API.Resources (Resource (..), resourceNeeds)
 import Config (DatabaseConfig (..), defaultConfig)
-import Database.Manager (CachePolicy (..), DatabaseManager, DatabaseStatus (..), LoadedDatabase (..), SettingRefusal (..), addDatabase, databaseLicence, getDatabase, initDatabaseManager, listDatabases, loadDatabase, setUploadDisplayName, setUploadLicence, setUploadRelease)
+import Database.Manager (CachePolicy (..), DatabaseManager, DatabaseStatus (..), LoadedDatabase (..), SettingRefusal (..), addDatabase, databaseLicence, getDatabase, initDatabaseManager, listDatabases, loadDatabase, setUploadDescription, setUploadDisplayName, setUploadLicence, setUploadRelease)
 import qualified Database.UploadedDatabase as UploadedDB
 import TestHelpers (membersOnly, withScratchDataDir)
 import Types (
@@ -35,6 +35,7 @@ import Types (
     licenceView,
     lvPermissions,
     mkDisplayName,
+    nonBlankText,
     parseSpdx,
     psEnforced,
     psPermission,
@@ -198,6 +199,42 @@ spec = do
         it "keeps a name without the spaces around it, and refuses one of spaces only" $ do
             mkDisplayName "  Cheeses " `shouldBe` Just name
             (A.decode "\" \"" :: Maybe DisplayName) `shouldBe` Nothing
+
+    describe "setUploadDescription" $ do
+        let description = Just "Pressed cheeses\r\nfrom the Jura, \"AOP\""
+
+        it "records the description of an upload where a restart reads it, and lists it" $
+            withUpload $ \manager home -> do
+                setUploadDescription manager "upload" description `shouldReturn` Right description
+                fmap UploadedDB.umDescription <$> UploadedDB.readUploadMeta home `shouldReturn` Just description
+                listed <- listDatabases manager
+                [dsDescription s | s <- listed, dsName s == "upload"] `shouldBe` [description]
+
+        it "removes it, from meta.toml too" $
+            withUpload $ \manager home -> do
+                _ <- setUploadDescription manager "upload" description
+                setUploadDescription manager "upload" Nothing `shouldReturn` Right Nothing
+                fmap UploadedDB.umDescription <$> UploadedDB.readUploadMeta home `shouldReturn` Just Nothing
+
+        it "describes a loaded database" $
+            withUpload $ \manager _ -> do
+                loaded <- loadDatabase manager "upload"
+                either (expectationFailure . T.unpack) (const (pure ())) loaded
+                _ <- setUploadDescription manager "upload" description
+                fmap (dcDescription . ldConfig) <$> getDatabase manager "upload" `shouldReturn` Just description
+
+        it "refuses to describe a configured database, which is the configuration file's" $
+            withScratchDataDir $ do
+                manager <- initDatabaseManager defaultConfig NoCache
+                addDatabase manager configured
+                setUploadDescription manager "configured" description
+                    `shouldReturn` Left (SettingHeldElsewhere "configured is set in the configuration file, which is where its description is written")
+
+        it "keeps a description without the spaces around it, and none for spaces only" $
+            withUpload $ \manager _ -> do
+                setUploadDescription manager "upload" (Just "  Cheeses\r\n ") `shouldReturn` Right (Just "Cheeses")
+                setUploadDescription manager "upload" (Just " \r\n ") `shouldReturn` Right Nothing
+                nonBlankText "  Cheeses " `shouldBe` Just "Cheeses"
 
     describe "licenceRefusal" $ do
         it "lets a database with no licence be downloaded" $
