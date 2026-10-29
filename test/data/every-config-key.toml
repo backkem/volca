@@ -64,6 +64,7 @@ licence_text = "Members only"
 refuses = ["download"]
 attribution = false
 accept = true
+usage = "anonymous"
 
 [[methods]]
 name = "EF"

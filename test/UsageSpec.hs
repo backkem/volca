@@ -33,7 +33,7 @@ import App.Env (AppEnv (..), AppM, runApp)
 import Config (DatabaseConfig (..))
 import qualified Database.Manager as DM
 import DependencyLicenceSpec (dependency, managerOn, root, rootPid)
-import Types (Licence (..), Release (..), processIdToText)
+import Types (Acceptance (..), Attribution (..), CountedRelease (..), Disclosure (..), Licence (..), OwnLicence (..), Release (..), UsageCount (..), processIdToText, termsAsked)
 import Usage
 
 ecoinvent :: Release
@@ -47,7 +47,7 @@ rootNaming = ProcessNaming{pnActivityName = "act-FR", pnProductName = Nothing, p
 
 -- | A line numbered @n@, the rest of no interest to the bookkeeping.
 lineNo :: Int -> UsageLine
-lineNo n = UsageLine n (UTCTime (fromGregorian 2026 10 5) 0) Scoring "db" (ProcessKey "p") Nothing Nothing (NE.singleton ecoinvent)
+lineNo n = UsageLine n (UTCTime (fromGregorian 2026 10 5) 0) Scoring "db" (ProcessKey "p") Nothing Nothing (NE.singleton (CountedRelease ecoinvent ReadersNamed)) (NE.singleton ecoinvent)
 
 -- | A log that has kept @n@ lines.
 logOf :: Int -> LogState
@@ -56,10 +56,18 @@ logOf n = foldr (const (snd . appendLine 10 lineNo)) emptyLog [1 .. n]
 seqs :: LogState -> [Int]
 seqs = map ulSeq . foldr (:) [] . lsLines
 
--- | Both databases loaded, the dependency declaring the release given.
+-- | Terms that ask the computations counted, naming each reader's organization.
+counting :: Licence
+counting = LicenceOwn OwnLicence{ownText = "Counted", ownRefused = mempty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked (Counted ReadersNamed)}
+
+-- | Both databases loaded, the dependency declaring the release given under terms that count.
 managerDeclaring :: Maybe Release -> IO DM.DatabaseManager
-managerDeclaring release = do
-    manager <- managerOn root dependency LicenceUnstated
+managerDeclaring = managerUnder counting
+
+-- | Both databases loaded, the dependency declaring the release given under that licence.
+managerUnder :: Licence -> Maybe Release -> IO DM.DatabaseManager
+managerUnder licence release = do
+    manager <- managerOn root dependency licence
     atomically $ modifyTVar' (DM.dmAvailableDbs manager) (M.adjust (\c -> c{dcRelease = release}) "dep")
     pure manager
 
@@ -131,11 +139,17 @@ spec = do
             _ <- runLogged manager lg (Just "account-7") (getActivityInventory "root" rootPid Nothing Nothing)
             UsagePage{upBoot = boot, upLines = ls} <- readUsage lg 0
             boot `shouldBe` usageBoot lg
-            map (\l -> (ulKind l, ulDatabase l, ulProcess l, ulHeldAs l, ulReader l, NE.toList (ulReads l))) ls
-                `shouldBe` [(Inventorying, "root", ProcessKey rootPid, Just rootNaming, Just "account-7", [ecoinvent])]
+            map (\l -> (ulKind l, ulDatabase l, ulProcess l, ulHeldAs l, ulReader l, NE.toList (ulCounted l), NE.toList (ulReads l))) ls
+                `shouldBe` [(Inventorying, "root", ProcessKey rootPid, Just rootNaming, Just "account-7", [CountedRelease ecoinvent ReadersNamed], [ecoinvent])]
 
         it "leaves nothing when no database it reads declares a release" $ do
             manager <- managerDeclaring Nothing
+            lg <- newUsageLog
+            _ <- runLogged manager lg Nothing (getActivityInventory "root" rootPid Nothing Nothing)
+            upLines <$> readUsage lg 0 `shouldReturn` []
+
+        it "leaves nothing for a release whose terms do not ask its computations counted" $ do
+            manager <- managerUnder LicenceUnstated (Just ecoinvent)
             lg <- newUsageLog
             _ <- runLogged manager lg Nothing (getActivityInventory "root" rootPid Nothing Nothing)
             upLines <$> readUsage lg 0 `shouldReturn` []
@@ -153,7 +167,7 @@ spec = do
                 modifyTVar' (DM.dmAvailableDbs manager) $
                     M.adjust (\c -> c{dcRelease = Just ecoinvent}) "dep"
                         . M.adjust (\c -> c{dcSource = Just "dep"}) "root"
-            DM.releasesRead manager "root" `shouldReturn` [ecoinvent]
+            DM.releasesRead manager "root" `shouldReturn` [CountedRelease ecoinvent ReadersNamed]
 
         it "leaves nothing for a process the database does not hold" $ do
             manager <- managerDeclaring (Just ecoinvent)
@@ -165,6 +179,8 @@ spec = do
         it "leaves the same line, the reader read from its header" $ do
             manager <- managerDeclaring (Just ecoinvent)
             lg <- newUsageLog
+            -- Terms that count are accepted first, as the reader would through accept_terms.
+            DM.acceptTerms manager (Just "account-7") (termsAsked [("dep", counting)])
             callMcp manager lg (Just "account-7") "get_inventory" [("database", "root"), ("process_id", rootPid)]
             map (\l -> (ulKind l, ulProcess l, ulHeldAs l, ulReader l)) . upLines <$> readUsage lg 0
                 `shouldReturn` [(Inventorying, ProcessKey rootPid, Just rootNaming, Just "account-7")]

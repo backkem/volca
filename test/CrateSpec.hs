@@ -22,7 +22,7 @@ import Config (DatabaseConfig (..))
 import Database.Crate
 import Database.SystemModel (Rule (..), Traced (..), parseSystemModel)
 import Database.Upload (DatabaseFormat (..))
-import Types (Acceptance (..), AllocationProperty (..), Attribution (..), FileReading (..), GeographyPolicy (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Reason (..), Release (..), StandardLicence (..))
+import Types (Acceptance (..), AllocationProperty (..), Attribution (..), Disclosure (..), FileReading (..), GeographyPolicy (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Reason (..), Release (..), StandardLicence (..), UsageCount (..))
 import Zip (zipFiles)
 
 ecoinvent :: Release
@@ -143,12 +143,13 @@ spec = do
                 `shouldBe` Just (toJSON (KM.singleton "@id" (String "https://spdx.org/licenses/CC-BY-4.0")))
 
         it "carries an own licence's text and what it refuses" $ do
-            let own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Download], ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked}
+            let own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Download], ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked (Counted ReadersAnonymous)}
                 licence = entity "#licence" (crate own)
             (licence >>= field "description") `shouldBe` Just (String "Members only")
             (entity "#licence-refuses" (crate own) >>= field "value") `shouldBe` Just (toJSON ["download" :: Text])
             (entity "#licence-attribution" (crate own) >>= field "value") `shouldBe` Just (Bool True)
             (entity "#licence-accept" (crate own) >>= field "value") `shouldBe` Just (Bool True)
+            (entity "#licence-usage" (crate own) >>= field "value") `shouldBe` Just (String "anonymous")
 
         it "states no licence rather than claim one" $
             (entity "./" (crate LicenceUnstated) >>= field "license") `shouldBe` Nothing
@@ -174,7 +175,7 @@ spec = do
                 `shouldMatchList` ["ro-crate-metadata.json", "payload/bread.zip"]
 
     describe "a modified database's package" $ do
-        let own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Resell], ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked}
+        let own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Resell], ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked NotCounted}
             original = Release{releaseName = "Bakery data", releaseVersion = "2025", releaseSystemModel = Nothing}
             modified = (input own){ciChanges = Just Changes{chReport = "# Changes to Bread\n", chOriginal = "bakery", chOriginalRelease = Just original}}
             packaged = packageExport "bread" modified payload
@@ -231,7 +232,7 @@ spec = do
     describe "openPackage" $ do
         let packaged licence = packageExport "bread" (input licence) payload
             opened = fmap (\p -> (pkPayload p, pkLicence p, pkRequires p)) <$> openPackage (packaged own)
-            own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Resell], ownAttribution = AttributionNotRequired, ownAcceptance = AcceptanceAsked}
+            own = LicenceOwn OwnLicence{ownText = "Members only", ownRefused = S.fromList [Resell], ownAttribution = AttributionNotRequired, ownAcceptance = AcceptanceAsked (Counted ReadersNamed)}
         it "reads back the export, its licence and the releases it requires" $
             opened `shouldBe` Right (Just (payload, own, [ecoinvent]))
 
