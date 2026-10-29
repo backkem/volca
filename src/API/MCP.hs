@@ -76,7 +76,7 @@ import qualified Service.Compare as Compare
 import qualified Service.CompareMethods as CompareMethods
 import SharedSolver (SharedSolver, computeInventoryMatrixWithDepsCached)
 import qualified SharedSolver
-import Types (Activity (..), BiosphereFlow (..), ClassificationFilter (..), ClassificationMatch (..), Database (..), Indexes (..), KindFilter (..), Licence (..), Permission (..), ProcessId, Terms (..), UUID, UnitDB, activityLocation, activityName, allocationKeyText, bfCompartmentName, bfCompartmentSub, exchangeIsInput, exchangeKindChoices, exchangeKindOf, getUnitNameForBioFlow, granted, lookupExchangeFlow, missingTerms, modelOf, modelTitle, parseExchangeKind, parseKindNames, processIdToText, qualifyRef, readingKey, withheldSentence)
+import Types (Activity (..), BiosphereFlow (..), ClassificationFilter (..), ClassificationMatch (..), Database (..), Indexes (..), KindFilter (..), Licence (..), Permission (..), ProcessId, Terms (..), UUID, UnitDB, activityLocation, activityName, allocationKeyText, bfCompartmentName, bfCompartmentSub, disclosureSentence, exchangeIsInput, exchangeKindChoices, exchangeKindOf, getUnitNameForBioFlow, granted, lookupExchangeFlow, missingTerms, modelOf, modelTitle, parseExchangeKind, parseKindNames, processIdToText, qualifyRef, readingKey, withheldSentence)
 import Usage (ProcessKey (..), UsageKind (..), UsageLog, Use (..), readerOf, recordUse)
 
 -- ---------------------------------------------------------------------------
@@ -687,7 +687,7 @@ termsRefusalText missing =
         [ "The publisher of " <> T.intercalate ", " (map termsDatabase missing) <> " asks its users to accept its terms of use before reading it."
         , "Show the user these terms in full. Only if they explicitly accept them, call accept_terms with the database named below; never accept them on their behalf."
         ]
-            ++ concat [["", "--- Terms of use of " <> termsDatabase t <> " ---", termsText t] | t <- missing]
+            ++ concat [["", "--- Terms of use of " <> termsDatabase t <> " ---", termsText t] ++ maybe [] (pure . disclosureSentence) (termsUsage t) | t <- missing]
 
 -- | Record that the reader accepted the terms of a database and of those it depends on.
 callAcceptTerms :: Maybe Text -> DatabaseManager -> RequestId -> KeyMap Value -> IO Value

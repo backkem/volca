@@ -1642,9 +1642,12 @@ appears that a client must know about /before/ calling it. Adding a route
 does not exempt a change from the bump: an absent route answers 404, and so
 does a request naming a database the engine has not loaded, so a client
 cannot tell "this engine is too old" from "you asked for the wrong thing"
-(revision 95: the row of a child's delivery sheet for one process, the
+(revision 96: the row of a child's delivery sheet for one process, the
 parent's process it was cut from, its share and its rule, at
 @GET /db/{db}/activity/{processId}/division@;
+revision 95: the @usage@ clause of an own licence and of the terms a reader
+accepts, and the @counted@ releases of a usage line, each with what its
+publisher sees of the reader;
 revision 94: describing an uploaded database, or clearing its description,
 at @PUT /db/{db}/description@;
 revision 93: the @rows@ of a reference table, and the download of a
@@ -1848,7 +1851,7 @@ the whole filtered set).
 Clients compare it to decide compatibility and to gate such capabilities.
 -}
 currentWireVersion :: Int
-currentWireVersion = 95
+currentWireVersion = 96
 
 getVersion :: AppM Value
 getVersion = do

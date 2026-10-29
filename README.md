@@ -188,6 +188,12 @@ licence = "CC-BY-4.0"          # the licence it is published under, by SPDX iden
                                #   the text's fingerprint in the volca_terms
                                #   cookie, or call the MCP tool accept_terms.
                                #   New text, asked again. Off by default
+# usage = "anonymous"          #   counts each computation on its release in the
+                               #   usage log, for its publisher: "anonymous"
+                               #   counts only, "organizations" adds each
+                               #   reader's organization and email domain.
+                               #   Needs accept = true, since readers accept the
+                               #   clause with the text. Absent, nothing is counted
                                # A copy is served under its source's licence; an
                                # upload's owner sets its own with PUT /db/{name}/licence
 # release = { name = "ecoinvent", version = "3.12", system_model = "Allocation, cut-off by classification" }
@@ -618,7 +624,7 @@ POST   /api/v1/auth                                                      Login (
 
 ### Usage log
 
-With `usage_log = true` under `[server]`, the engine keeps one line for each computation on a process: reading it (its exchanges, supply chain, path, consumers), its inventory, its scores, what weighs in a score, or a comparison. A line names the kind, the database and process, what the database calls the process (`heldAs`: its activity name, product name and location; null once the database no longer holds it), the time, the releases read (the database's own and those of every database it depends on, transitively, a copy or a re-keyed database counting as a read of the one whose files it reads) and the reader, copied from the request's `Volca-Reader` header when one is sent. Only computations that answered are kept, from REST and MCP alike, and only on databases where one release at least is declared: without a release nothing says whose data was read. A batch keeps one line per process it scored, and a comparison one per side.
+With `usage_log = true` under `[server]`, the engine keeps one line for each computation on a process: reading it (its exchanges, supply chain, path, consumers), its inventory, its scores, what weighs in a score, or a comparison. A line names the kind, the database and process, what the database calls the process (`heldAs`: its activity name, product name and location; null once the database no longer holds it), the time, the releases read (the database's own and those of every database it depends on, transitively, a copy or a re-keyed database counting as a read of the one whose files it reads) and the reader, copied from the request's `Volca-Reader` header when one is sent. Only computations that answered are kept, from REST and MCP alike, and only for the releases whose database's terms ask its computations counted (`usage` beside `accept = true`, so its readers accepted the clause): without a release nothing says whose data was read, and without the clause nobody asked for a count. `counted` lists those releases, each with `disclosure`: `anonymous`, or `organizations` when the publisher sees the reader's organization and email domain. `reads` repeats the releases alone, for collectors that read only that field, until 0.17. A batch keeps one line per process it scored, and a comparison one per side.
 
 The lines live in memory. `GET /api/v1/usage?after=N` returns those numbered after `N` (a page at a time, `more` saying whether others wait) with the `boot` they belong to; each start of the engine draws a new one and numbers from 1 again. `DELETE /api/v1/usage?boot=B&through=N` forgets the lines a collector kept, and is refused with 409 for a `boot` from another start. A read-only engine answers both, since the log is not its data, and neither keeps the engine from going idle. When nobody collects, the oldest lines go past 100,000 and the engine says how many. The engine trusts the header as sent: the server in front of it decides who a reader is, and is the one to strip the header from what callers send.
 

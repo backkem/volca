@@ -741,7 +741,7 @@ licenceDecoder :: Decoder Licence
 licenceDecoder = do
     downloads <- getFieldOpt "downloads" :: Decoder (Maybe Text)
     mapM_ (const (fail "downloads is no longer read: write licence_text with refuses = [\"download\"] for a licence that refuses downloads")) downloads
-    keys <- LicenceKeys <$> getFieldOpt "licence" <*> getFieldOpt "licence_text" <*> getFieldOpt "refuses" <*> getFieldOpt "attribution" <*> getFieldOpt "accept"
+    keys <- LicenceKeys <$> getFieldOpt "licence" <*> getFieldOpt "licence_text" <*> getFieldOpt "refuses" <*> getFieldOpt "attribution" <*> getFieldOpt "accept" <*> getFieldOpt "usage"
     either (fail . T.unpack) pure (licenceFromKeys keys)
 
 {- | @allocation@ on a database entry: @declared@, the shares its files
@@ -1022,7 +1022,7 @@ configKeys =
         ,
             ( "databases"
             , keys $
-                map plain ["name", "displayName", "path", "description", "load", "default", "depends", "deletable", "geography_policy", "allocation", "licence", "licence_text", "refuses", "attribution", "accept", "downloads"]
+                map plain ["name", "displayName", "path", "description", "load", "default", "depends", "deletable", "geography_policy", "allocation", "licence", "licence_text", "refuses", "attribution", "accept", "usage", "downloads"]
                     <> [ ("locationAliases", AcceptsAnything)
                        , ("patches", exchangePatch)
                        , ("release", keys (map plain ["name", "version", "system_model"]))

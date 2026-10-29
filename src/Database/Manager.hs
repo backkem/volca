@@ -303,6 +303,7 @@ import Types (
     BiosphereFlow (..),
     BlockerReason (..),
     BuildInputs (..),
+    CountedRelease (..),
     CrossDBLink (..),
     CrossDBLinkingStats (..),
     Database (..),
@@ -333,6 +334,7 @@ import Types (
     Unit (..),
     UnitDB,
     UnresolvedProduct (..),
+    UsageCount (..),
     activityName,
     allocationKeyText,
     bfCompartmentName,
@@ -349,6 +351,7 @@ import Types (
     flowClosure,
     granted,
     initializeRuntimeFields,
+    licenceUsage,
     modelOf,
     modelTitle,
     nonBlankText,
@@ -869,18 +872,22 @@ dependencyNames loaded root = go (S.singleton root) (depsOf root)
         | M.member name loaded = name : go (S.insert name seen) (rest ++ depsOf name)
         | otherwise = go (S.insert name seen) rest
 
-{- | The releases a computation on a database reads: its own, then those of the
-databases it depends on, transitively, each with the database whose files it
-reads when it is a copy or a re-keyed one: a copy starts without a release, but
-its amounts are still its source's. One without a declared release says
-nothing about whose data it is, and is left out.
+{- | The releases a computation on a database reads and is counted for: its
+own, then those of the databases it depends on, transitively, each with the
+database whose files it reads when it is a copy or a re-keyed one: a copy
+starts without a release, but its amounts are still its source's. One without
+a declared release says nothing about whose data it is, and one whose terms do
+not ask its computations to be counted is not counted: both are left out.
 -}
-releasesRead :: DatabaseManager -> Text -> IO [Release]
+releasesRead :: DatabaseManager -> Text -> IO [CountedRelease]
 releasesRead manager dbName = do
     loaded <- readTVarIO (dmLoadedDbs manager)
     configs <- readTVarIO (dmAvailableDbs manager)
     let read' = concatMap (sourceChain configs) (dbName : dependencyNames loaded dbName)
-    pure (nub (mapMaybe (dcRelease <=< (`M.lookup` configs)) read'))
+        counted config = case licenceUsage (licenceOf configs config) of
+            Counted disclosure -> (`CountedRelease` disclosure) <$> dcRelease config
+            NotCounted -> Nothing
+    pure (nub (mapMaybe (counted <=< (`M.lookup` configs)) read'))
 
 -- | A database, then the one whose files it reads, and so on; a loop stops at the first name seen again.
 sourceChain :: Map Text DatabaseConfig -> Text -> [Text]

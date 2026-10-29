@@ -898,8 +898,12 @@ class Client:
         Its own, and those of every database it depends on, when their
         publisher asks its readers to accept them: until then, the engine
         answers 403 to every request reading it. Each entry is
-        ``{"database", "text", "fingerprint"}``, once per text. Empty when
-        nothing is asked, and against an engine older than wire revision 78.
+        ``{"database", "text", "fingerprint", "usage"}``, once per text.
+        ``usage`` is what the terms let the publisher see of the computations:
+        ``None`` when nothing is counted, ``"anonymous"`` for counts alone,
+        ``"organizations"`` for the counts with each reader's organization and
+        email domain. Empty when nothing is asked, and against an engine older
+        than wire revision 78.
         """
         root = self._db(db_name)
         databases = {d.name: d for d in self.list_databases()}
@@ -914,7 +918,7 @@ class Client:
             licence = databases[name].licence or {}
             fingerprint = licence.get("acceptance")
             if fingerprint and fingerprint not in terms:
-                terms[fingerprint] = {"database": name, "text": licence["text"], "fingerprint": fingerprint}
+                terms[fingerprint] = {"database": name, "text": licence["text"], "fingerprint": fingerprint, "usage": licence.get("usage")}
             pending.extend(databases[name].depends_on)
         return list(terms.values())
 
@@ -927,6 +931,8 @@ class Client:
 
             for t in c.terms_to_accept():
                 print(t["text"])
+                if t["usage"]:
+                    print("Computations are counted for the publisher:", t["usage"])
             if input("Do you accept these terms? [y/N] ") == "y":
                 c.accept_terms()
         """
@@ -1804,7 +1810,11 @@ class Client:
         ``licence`` names one by its ``kind``: ``{"kind": "standard", "id":
         "CC-BY-4.0"}`` for a standard licence (:meth:`licences` lists them),
         ``{"kind": "own", "text": ..., "refused": ["download", ...],
-        "attribution": True}`` for an own one, or ``{"kind": "unstated"}``. A
+        "attribution": True, "accept": True, "usage": "anonymous"}`` for an
+        own one, or ``{"kind": "unstated"}``. ``usage`` counts the computations
+        made on the database for its publisher, ``"anonymous"`` or with each
+        reader's ``"organizations"``; it needs ``accept``, since readers accept
+        the clause with the text, and is left out to count nothing. A
         licence this returns can be sent back as it came. A database whose
         licence refuses ``download`` answers :meth:`export_database` and
         :meth:`document_file` with a 403, and so does every copy of it.

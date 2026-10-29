@@ -11,7 +11,7 @@ import Test.Hspec
 import qualified Data.Set as S
 import Database.UploadedDatabase
 import TestHelpers (modelDividingBy)
-import Types (Acceptance (..), AllocationProperty (..), Attribution (..), FileReading (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Release (..), Requirement (..), StandardLicence (..), SystemModel (..), addedAt, addedText, parseAdded)
+import Types (Acceptance (..), AllocationProperty (..), Attribution (..), Disclosure (..), FileReading (..), Licence (..), OwnLicence (..), Permission (..), Reading (..), Release (..), Requirement (..), StandardLicence (..), SystemModel (..), UsageCount (..), addedAt, addedText, parseAdded)
 
 -- | Minimal UploadMeta without description
 baseMeta :: UploadMeta
@@ -215,7 +215,7 @@ spec = do
             fmap umDepends (parseMetaToml (formatMetaToml meta)) `shouldBe` Just ["agribalyse", "ecoinvent"]
 
         it "round-trips an own licence, quotes and all" $ do
-            let licence = LicenceOwn OwnLicence{ownText = "Licensed to \"members\" only", ownRefused = S.fromList [Download, Resell], ownAttribution = AttributionNotRequired, ownAcceptance = AcceptanceAsked}
+            let licence = LicenceOwn OwnLicence{ownText = "Licensed to \"members\" only", ownRefused = S.fromList [Download, Resell], ownAttribution = AttributionNotRequired, ownAcceptance = AcceptanceAsked (Counted ReadersNamed)}
             fmap umLicence (parseMetaToml (formatMetaToml baseMeta{umLicence = licence})) `shouldBe` Just licence
 
         it "round-trips an own licence ending in a quote" $ do
