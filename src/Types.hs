@@ -2799,6 +2799,11 @@ disclosureCode :: Disclosure -> Text
 disclosureCode ReadersAnonymous = "anonymous"
 disclosureCode ReadersNamed = "organizations"
 
+-- | The counting clause as a reader reads it before accepting the terms.
+disclosureSentence :: Disclosure -> Text
+disclosureSentence ReadersAnonymous = "Its publisher sees how often each of its processes is computed with, without the readers' names."
+disclosureSentence ReadersNamed = "Its publisher sees how often each of its processes is computed with, and the organization and email domain of each reader, never the address."
+
 parseDisclosure :: Text -> Either Text Disclosure
 parseDisclosure = parseCode "usage" disclosureCode
 
@@ -2906,7 +2911,8 @@ licenceFingerprint (LicenceOwn OwnLicence{ownText = text, ownAcceptance = Accept
     Just (T.take 16 (T.pack (show (hashWith SHA256 (TE.encodeUtf8 (text <> clause usage))))))
   where
     clause NotCounted = ""
-    clause (Counted d) = "\nusage: " <> disclosureCode d
+    -- A NUL, which a written licence never holds: no text, however it ends, passes for a clause.
+    clause (Counted d) = "\0usage: " <> disclosureCode d
 licenceFingerprint _ = Nothing
 
 -- | The terms a reader of a database accepts before it is opened to them.

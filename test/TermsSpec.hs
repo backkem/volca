@@ -180,6 +180,11 @@ spec = do
             reply <- callOn manager (Just "ana") "get_impacts"
             fmap ("Terms of the dependency" `T.isInfixOf`) (errorText reply) `shouldBe` Just True
 
+        it "say what the publisher sees of the computations the terms ask counted" $ do
+            manager <- managerOn root dependency (LicenceOwn OwnLicence{ownText = "Counted", ownRefused = S.empty, ownAttribution = AttributionRequired, ownAcceptance = AcceptanceAsked (Counted ReadersNamed)})
+            reply <- callOn manager (Just "ana") "get_impacts"
+            fmap (disclosureSentence ReadersNamed `T.isInfixOf`) (errorText reply) `shouldBe` Just True
+
         it "ask for them before saying a tool name is unknown" $ do
             manager <- managerOn root dependency asked
             reply <- callOn manager (Just "ana") "no_such_tool"
