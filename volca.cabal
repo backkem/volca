@@ -157,6 +157,7 @@ library
                      , OlcaSchema.Writer
                      , ILCD.Writer
                      , Database.Crate
+                     , Database.Digest
                      , Database.Requirements
                      , Database.Export
                      , Database.ExportFormulas
@@ -452,6 +453,7 @@ test-suite lca-tests
                      , ExportSpec
                      , ExportHandlerSpec
                      , CrateSpec
+                     , DigestSpec
                      , RequirementsSpec
                      , ZipSpec
                      , PropertiesSpec
