@@ -115,6 +115,7 @@ module Database.Manager (
     releasesRead,
     parentOf,
     systemModelOf,
+    madeFrom,
     termsToAccept,
     acceptedTerms,
     acceptTerms,
@@ -207,7 +208,9 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Database.SystemModel (ModelOnParent, takenProcesses)
+import Database.Crate (Division (..), Identity (..), MadeFrom (..))
+import Database.Digest (fileDigest, sourcesDigest, textDigest)
+import Database.SystemModel (ModelOnParent, takenProcesses, traceOf)
 import GHC.Generics (Generic)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile)
 import System.FilePath (addTrailingPathSeparator, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
@@ -292,7 +295,7 @@ import SubstanceRegistry (CASNumber (..), KeyNormalizers (..), NormName (..), Su
 import SynonymDB (BridgeDirection (..), SynEdge (..), SynonymDB (..), buildFromCSV, emptySynonymDB, excludeJunkSynonyms, excludeOverFrequentSynonyms, loadFromCSVFileWithCache, mergeSynonymDBs, normalizeName, oversizedClasses, reopenedBridges, synonymCount, uncoveredUnitSuffixes)
 import Types (
     Activity,
-    AddedAt,
+    AddedAt (..),
     AllocationKey (..),
     AttributeFallback (..),
     BioFlowDB,
@@ -384,6 +387,7 @@ import Method.ParserSimaPro (isSimaProMethodCSV, parseSimaProMethodCSVBytes)
 import qualified Method.Patch
 import Method.SimaProScoring (SimaProMethodFile (..), simaProCollection)
 import SynonymDB.Extract (extractFromEcoSpold2, extractFromILCDFlows, synonymPairsToCSV)
+import qualified Version
 
 -- | A fully loaded database with solver ready for queries
 data LoadedDatabase = LoadedDatabase
@@ -3063,13 +3067,83 @@ systemModelOf manager dbName = do
     configs <- readTVarIO (dmAvailableDbs manager)
     case M.lookup dbName configs of
         Nothing -> pure (Left ("Database not found: " <> dbName))
-        Just config -> case (dcReading config, parentOf configs config) of
-            (ByModel model, Just parentName) ->
-                getDatabase manager parentName <&> \case
-                    Nothing -> Left ("the parent " <> parentName <> " of " <> dbName <> " is not loaded")
-                    Just parent -> either (Left . T.intercalate "; " . NE.toList) Right (takenProcesses model (ldDatabase parent))
-            (ByModel _, Nothing) -> pure (Left (dbName <> " is divided by a system model, and none of its sources is a parent read under none"))
-            (FromFiles _, _) -> pure (Left (dbName <> " is read from its files, not divided from a parent by a system model"))
+        Just config -> case dcReading config of
+            ByModel model -> fmap fst <$> modelOnParent manager configs config model
+            FromFiles _ -> pure (Left (dbName <> " is read from its files, not divided from a parent by a system model"))
+
+-- | A child's model read against its loaded parent, and that parent.
+modelOnParent :: DatabaseManager -> M.Map Text DatabaseConfig -> DatabaseConfig -> SystemModel -> IO (Either Text (ModelOnParent, LoadedDatabase))
+modelOnParent manager configs config model = case parentOf configs config of
+    Nothing -> pure (Left (dcName config <> " is divided by a system model, and none of its sources is a parent read under none"))
+    Just parentName ->
+        getDatabase manager parentName <&> \case
+            Nothing -> Left ("the parent " <> parentName <> " of " <> dcName config <> " is not loaded")
+            Just parent -> either (Left . T.intercalate "; " . NE.toList) (Right . (,parent)) (takenProcesses model (ldDatabase parent))
+
+{- | What a loaded database was made from, as its package names it: a child,
+its parent, model and the trace of each process back to the parent's blocks;
+any other database, its own sources.
+-}
+madeFrom :: DatabaseManager -> LoadedDatabase -> IO (Either Text MadeFrom)
+madeFrom manager ld = runExceptT $ do
+    configs <- liftIO $ readTVarIO (dmAvailableDbs manager)
+    case dcReading config of
+        FromFiles _ -> ReadFrom <$> ExceptT (sourcesIdentity configs config)
+        ByModel model -> do
+            -- The parent may have been unloaded since the child was divided: loaded again, it is the one the child was divided from.
+            mapM_ (ExceptT . loadDatabase manager) (parentOf configs config)
+            (onParent, parent) <- ExceptT (modelOnParent manager configs config model)
+            parentIdentity <- ExceptT (sourcesIdentity configs (ldConfig parent))
+            journal <- liftIO (journalDigest config)
+            pure $
+                DividedFrom
+                    Division
+                        { dvParent = dcDisplayName (ldConfig parent)
+                        , dvParentIdentity = parentIdentity
+                        , dvJournal = journal
+                        , dvModel = model
+                        , dvEngine = T.pack (Version.version <> " (" <> Version.gitHash <> ")")
+                        , dvMade = (\(AddedAt at) -> at) <$> dcAdded config
+                        , dvTrace = traceOf onParent (ldDatabase parent) (ldDatabase ld)
+                        }
+  where
+    config :: DatabaseConfig
+    config = ldConfig ld
+
+{- | A database read from files, by digest: the files of the database owning
+them, the patches its configuration applies, its own journal, and how it
+reads their shares. Sources no longer on disk, as when only the cache was
+shipped, are refused by name: the package could not say what it was read from.
+
+The patches are digested as the engine reads them: they are declared in a
+configuration, and no text of them is kept to digest instead.
+-}
+sourcesIdentity :: M.Map Text DatabaseConfig -> DatabaseConfig -> IO (Either Text Identity)
+sourcesIdentity configs config = do
+    let path = dcPath (filesOwner configs config)
+    present <- (||) <$> doesFileExist path <*> doesDirectoryExist path
+    if not present
+        then pure (Left ("The sources of " <> dcName config <> " are not on disk (" <> T.pack path <> "): its package names them by their digest."))
+        else do
+            files <- sourcesDigest path
+            journal <- journalDigest config
+            pure $
+                Right
+                    Identity
+                        { idFiles = files
+                        , idPatches = if null (dcPatches config) then Nothing else Just (textDigest (T.pack (show (dcPatches config))))
+                        , idJournal = journal
+                        , idReading = allocationKeyText (readingKey (dcReading config))
+                        }
+
+-- | The digest of a database's journal, when it records a change.
+journalDigest :: DatabaseConfig -> IO (Maybe Text)
+journalDigest config =
+    editHome config >>= \case
+        Nothing -> pure Nothing
+        Just home -> do
+            edited <- Journal.journalHasEntries home
+            if edited then Just <$> fileDigest (Journal.journalPath home) else pure Nothing
 
 {- | How the files under a database are read: a child's are its parent's,
 read whole.

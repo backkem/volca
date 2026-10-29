@@ -258,6 +258,7 @@ import Database.Manager (
     loadFlowSynonyms,
     loadOlcaPackageMethod,
     loadUnitDefs,
+    madeFrom,
     readDocumentFile,
     readRefDataSource,
     relinkDatabase,
@@ -934,9 +935,11 @@ crateInput manager ld fmt modification = do
     licence <- fromMaybe LicenceUnstated <$> databaseLicence manager name
     today <- utctDay <$> getCurrentTime
     history <- if isModified modification then fmap Just <$> databaseHistory manager name else pure (Right Nothing)
+    made <- madeFrom manager ld
     pure $ do
         requires <- requiredReleases name configs (dbDependsOn (ldDatabase ld))
         changes <- fmap (changesOf (databaseProvenance configs config)) <$> history
+        madeFrom' <- made
         Right
             CrateInput
                 { ciName = dcDisplayName config
@@ -946,6 +949,7 @@ crateInput manager ld fmt modification = do
                 , ciRequires = requires
                 , ciFormat = fmt
                 , ciChanges = changes
+                , ciMadeFrom = madeFrom'
                 }
   where
     config :: DatabaseConfig

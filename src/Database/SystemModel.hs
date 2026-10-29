@@ -42,11 +42,15 @@ module Database.SystemModel (
     NamedSubstitution (..),
     ModelOnParent (..),
     takenProcesses,
+    Traced (..),
+    Rule (..),
+    traceOf,
+    ruleText,
     severalProducts,
     buys,
 ) where
 
-import Control.Monad (unless)
+import Control.Monad (mfilter, unless)
 import Data.Either (partitionEithers)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
@@ -66,6 +70,7 @@ import Types (
     ClassificationFilter (..),
     ClassificationMatch (..),
     Database,
+    DeclaredShare (..),
     Exchange (..),
     ModelException (..),
     ModelSubstitution (..),
@@ -78,9 +83,11 @@ import Types (
     TechnosphereFlow (..),
     classificationMatches,
     exchangeAmount,
+    exchangeDeclaredShare,
     exchangeFlowId,
     exchangeIsInput,
     exchangeIsProductOutput,
+    exchangeIsReference,
     parseProcessRef,
     processRefText,
     propertyName,
@@ -382,3 +389,89 @@ takenProcesses model parent = named <$> resolveModel model (sdbActivities simple
 
     flowName :: Exchange -> Text
     flowName ex = maybe (UUID.toText (exchangeFlowId ex)) tfName (M.lookup (exchangeFlowId ex) (sdbTechFlows simple))
+
+{- | A process of a child, as its delivery sheet traces it back to the
+parent: the activity is the parent's, the product the row it keeps.
+-}
+data Traced = Traced
+    { trProcess :: !(UUID, UUID)
+    , trActivity :: !Text
+    , trProduct :: !Text
+    , trShare :: !(Maybe Double)
+    , trRule :: !Rule
+    }
+
+-- | Why a process of a child carries the share it does.
+data Rule
+    = -- | A block its key could not weigh, left with all its products.
+      KeptWhole !AllocationProperty
+    | -- | A piece of a divided block: its key, the exception that chose that key, the substitutions its block also made.
+      Divided !AllocationProperty !(Maybe Reason) ![Reason]
+    | -- | All a block has left once its other products are substituted: the whole block.
+      Credited !(NonEmpty Reason)
+    | -- | A share below 100 the source declared on a process of one product.
+      DeclaredBySource
+
+ruleText :: Rule -> Text
+ruleText = \case
+    KeptWhole prop -> "kept whole: its products cannot be weighed by " <> propertyName prop
+    Divided prop exception substitutions ->
+        propertyName prop
+            <> maybe ", default key" ((", exception: " <>) . reasonText) exception
+            <> foldMap (("; substitution: " <>) . reasonText) substitutions
+    Credited reasons -> T.intercalate "; " (map (("substitution: " <>) . reasonText) (NE.toList reasons))
+    DeclaredBySource -> "share declared by the source"
+
+{- | Each process of a child that comes from a block of its parent, and each
+share below 100 the source declared on a process of one product. Any other process is
+the parent's as it stands. A block left whole is listed once, under its
+reference product.
+
+A process comes from a block when its activity is the block's and its product
+one of the block's: a process of one product under the same activity is not
+the block's.
+-}
+traceOf :: ModelOnParent -> Database -> Database -> [Traced]
+traceOf onParent parent child =
+    [ Traced{trProcess = k, trActivity = activityName act, trProduct = productName ref, trShare = share, trRule = rule}
+    | (k, act) <- M.toList (sdbActivities simple)
+    , ref <- take 1 (filter exchangeIsReference (exchanges act))
+    , Just (share, rule) <- [ruled k act (exchangeDeclaredShare ref)]
+    ]
+  where
+    simple :: SimpleDatabase
+    simple = toSimpleDatabase child
+
+    ruled :: (UUID, UUID) -> Activity -> Maybe DeclaredShare -> Maybe (Maybe Double, Rule)
+    ruled (activityId, productId) act declared
+        | not (fromBlock activityId productId) = (\d -> (Just (dsPercent d), DeclaredBySource)) <$> mfilter ((< 100) . dsPercent) declared
+        | severalProducts act = Just (Nothing, KeptWhole (maybe (smDefault (mopModel onParent)) exKey exception))
+        | Just DeclaredShare{dsPercent = share, dsBy = Just prop} <- declared = Just (Just share, Divided prop (exReason <$> exception) substitutions)
+        | otherwise = (\reasons -> (Just 100, Credited reasons)) <$> NE.nonEmpty substitutions
+      where
+        exception :: Maybe ModelException
+        exception = M.lookup activityId exceptions
+
+        substitutions :: [Reason]
+        substitutions = M.findWithDefault [] activityId substituted
+
+    fromBlock :: UUID -> UUID -> Bool
+    fromBlock activityId productId = maybe False (S.member productId) (M.lookup activityId blockProducts)
+
+    blockProducts :: M.Map UUID (S.Set UUID)
+    blockProducts =
+        M.fromList
+            [ (activityId, S.fromList (map exchangeFlowId (filter exchangeIsProductOutput (exchanges act))))
+            | ((activityId, _), act) <- M.toList (sdbActivities (toSimpleDatabase parent))
+            , severalProducts act
+            ]
+
+    -- Two exceptions taking one block are refused when the model is read.
+    exceptions :: M.Map UUID ModelException
+    exceptions = M.fromList [(u, ex) | (ex, taken) <- mopExceptions onParent, (u, _) <- taken]
+
+    substituted :: M.Map UUID [Reason]
+    substituted = M.fromListWith (flip (<>)) [(prActivity (subCoproduct (nsRule ns)), [subReason (nsRule ns)]) | ns <- mopSubstitutions onParent]
+
+    productName :: Exchange -> Text
+    productName ex = maybe (UUID.toText (exchangeFlowId ex)) tfName (M.lookup (exchangeFlowId ex) (sdbTechFlows simple))

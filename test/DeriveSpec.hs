@@ -51,7 +51,7 @@ import Database.Manager (
     initDatabaseManager,
     loadDatabase,
  )
-import Database.SystemModel (parseSystemModel)
+import Database.SystemModel (Traced (..), parseSystemModel, ruleText, takenProcesses, traceOf)
 import Database.Upload (DatabaseFormat (..))
 import TestHelpers (modelDividingBy, withScratchDataDir, withinTolerance)
 import Types (
@@ -200,6 +200,26 @@ spec = around_ withScratchDataDir $ describe "Database.Edit.deriveDatabase" $ do
                 inputOf "Cow milk" child `shouldSatisfy` near [2.5, 7.5]
                 inputOf "Cream" child `shouldSatisfy` near [2]
 
+        it "traces each piece to its block and the rule that gave its share, and a share the source declared" $
+            withParent $ \manager -> do
+                parent <- loadedDb manager parentName
+                let model = exceptionTaking "wet mass" (dairyActivity parent)
+                child <- deriveWith manager model
+                -- The pig farm's 100 % cuts nothing and is not listed.
+                traced model parent child
+                    `shouldReturn` [ ("Butter", Just 50, "share declared by the source")
+                                   , ("Cheese", Just 25, "wet mass, exception: Dairy by its solids.")
+                                   , ("Whey", Just 75, "wet mass, exception: Dairy by its solids.")
+                                   ]
+
+        it "traces a piece divided by the model's default key" $
+            withParent $ \manager -> do
+                parent <- loadedDb manager parentName
+                let model = T.unlines ["name = \"Priced\"", "version = \"1.0.0\"", "[allocation]", "default = \"price\""]
+                child <- deriveWith manager model
+                (filter (\(product, _, _) -> product == "Cheese") <$> traced model parent child)
+                    `shouldReturn` [("Cheese", Just 51, "price, default key")]
+
         it "refuses an exception that divides none of the blocks it takes, named" $
             withParent $ \manager -> do
                 parent <- loadedDb manager parentName
@@ -289,6 +309,14 @@ spec = around_ withScratchDataDir $ describe "Database.Edit.deriveDatabase" $ do
                 child <- either (fail . T.unpack) pure =<< childOf defaultUnitConfig model namedParent
                 [parameterDefinition p | a <- V.toList (dbActivities child), Just p <- [M.lookup "whey_out" (activityParameters a)]]
                     `shouldBe` [CalculatedParameter "3" (Just 3)]
+
+        it "traces the cheese to the dairy block, whole, by the substitution's reason" $
+            withSource wheyCSV $ \manager -> do
+                parent <- parentOf manager
+                let model = substitutingWhey parent (snd (dairyProducts parent))
+                child <- deriveWith manager model
+                -- The pig farm and the powder plant make one product each, at 100 %: nothing to trace.
+                traced model parent child `shouldReturn` [("Cheese", Just 100, "substitution: Whey replaces milk powder in pig feed, by its solids.")]
 
         it "is still substituted after a restart" $
             withSource wheyCSV $ \manager -> do
@@ -452,6 +480,13 @@ substitutingWhey parent product =
         , "ratio = 0.25"
         , "reason = \"Whey replaces milk powder in pig feed, by its solids.\""
         ]
+
+-- | The child's trace back to its parent under the model of this text: product, share and rule, by product.
+traced :: Text -> Database -> Database -> IO [(Text, Maybe Double, Text)]
+traced text parent child = do
+    model <- either (fail . show) pure (parseSystemModel text)
+    onParent <- either (fail . show) pure (takenProcesses model parent)
+    pure (sortOn (\(product, _, _) -> product) [(trProduct t, trShare t, ruleText (trRule t)) | t <- traceOf onParent parent child])
 
 loadedDb :: DatabaseManager -> Text -> IO Database
 loadedDb manager name = either (fail . show) (pure . ldDatabase . fst) =<< loadDatabase manager name
