@@ -391,10 +391,12 @@ takenProcesses model parent = named <$> resolveModel model (sdbActivities simple
     flowName ex = maybe (UUID.toText (exchangeFlowId ex)) tfName (M.lookup (exchangeFlowId ex) (sdbTechFlows simple))
 
 {- | A process of a child, as its delivery sheet traces it back to the
-parent: the activity is the parent's, the product the row it keeps.
+parent: the activity is the parent's, the product the row it keeps, and the
+parent's process it was cut from.
 -}
 data Traced = Traced
     { trProcess :: !(UUID, UUID)
+    , trParent :: !(UUID, UUID)
     , trActivity :: !Text
     , trProduct :: !Text
     , trShare :: !(Maybe Double)
@@ -433,7 +435,7 @@ the block's.
 -}
 traceOf :: ModelOnParent -> Database -> Database -> [Traced]
 traceOf onParent parent child =
-    [ Traced{trProcess = k, trActivity = activityName act, trProduct = productName ref, trShare = share, trRule = rule}
+    [ Traced{trProcess = k, trParent = parentKey k, trActivity = activityName act, trProduct = productName ref, trShare = share, trRule = rule}
     | (k, act) <- M.toList (sdbActivities simple)
     , ref <- take 1 (filter exchangeIsReference (exchanges act))
     , Just (share, rule) <- [ruled k act (exchangeDeclaredShare ref)]
@@ -455,14 +457,22 @@ traceOf onParent parent child =
         substitutions :: [Reason]
         substitutions = M.findWithDefault [] activityId substituted
 
-    fromBlock :: UUID -> UUID -> Bool
-    fromBlock activityId productId = maybe False (S.member productId) (M.lookup activityId blockProducts)
+    -- A process outside every block is the parent's own, kept as it was.
+    parentKey :: (UUID, UUID) -> (UUID, UUID)
+    parentKey k@(activityId, productId) = case M.lookup activityId blockProducts of
+        Just (block, products) | S.member productId products -> block
+        _ -> k
 
-    blockProducts :: M.Map UUID (S.Set UUID)
+    fromBlock :: UUID -> UUID -> Bool
+    fromBlock activityId productId = maybe False (S.member productId . snd) (M.lookup activityId blockProducts)
+
+    -- Each block of the parent by its activity, with its own key: a process of
+    -- one product may sit under the same activity beside it.
+    blockProducts :: M.Map UUID ((UUID, UUID), S.Set UUID)
     blockProducts =
         M.fromList
-            [ (activityId, S.fromList (map exchangeFlowId (filter exchangeIsProductOutput (exchanges act))))
-            | ((activityId, _), act) <- M.toList (sdbActivities (toSimpleDatabase parent))
+            [ (activityId, (k, S.fromList (map exchangeFlowId (filter exchangeIsProductOutput (exchanges act)))))
+            | (k@(activityId, _), act) <- M.toList (sdbActivities (toSimpleDatabase parent))
             , severalProducts act
             ]
 

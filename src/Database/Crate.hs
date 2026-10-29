@@ -51,13 +51,12 @@ import qualified Data.Text.Encoding as T
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
-import qualified Data.UUID as UUID
 import Numeric (showFFloat)
 
 import Config (DatabaseConfig (..))
 import Database.SystemModel (Traced (..), ruleText)
 import Database.Upload (DatabaseFormat (..), formatDisplayText)
-import Types (Acceptance (..), Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), Release (..), StandardLicence, StandardTerms (..), SystemModel (..), licenceFromKeys, permissionCode, spdxId, standardTerms)
+import Types (Acceptance (..), Attribution (..), Licence (..), LicenceKeys (..), OwnLicence (..), ProcessRef (..), Release (..), StandardLicence, StandardTerms (..), SystemModel (..), licenceFromKeys, permissionCode, processRefText, spdxId, standardTerms)
 import Zip (zipFiles)
 
 -- | How an export is handed over: the bytes alone, or packaged with their description.
@@ -164,11 +163,11 @@ traceCsv :: [Traced] -> Text
 traceCsv rows = T.concat (map line (header : map cells rows))
   where
     header :: [Text]
-    header = ["process_id", "activity", "product", "share_percent", "rule"]
+    header = ["process_id", "parent_process_id", "activity", "product", "share_percent", "rule"]
 
     cells :: Traced -> [Text]
-    cells Traced{trProcess = (activityId, productId), ..} =
-        [UUID.toText activityId <> "_" <> UUID.toText productId, trActivity, trProduct, maybe "" (\s -> T.pack (showFFloat Nothing s "")) trShare, ruleText trRule]
+    cells Traced{..} =
+        [processRefText (uncurry ProcessRef trProcess), processRefText (uncurry ProcessRef trParent), trActivity, trProduct, maybe "" (\s -> T.pack (showFFloat Nothing s "")) trShare, ruleText trRule]
 
     line :: [Text] -> Text
     line fields = T.intercalate "," (map quoted fields) <> "\r\n"

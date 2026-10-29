@@ -27,9 +27,9 @@ module DeriveSpec (spec) where
 import Control.Concurrent.STM (atomically, modifyTVar', readTVarIO)
 import qualified Data.ByteString.Char8 as BS
 import Data.Either (fromLeft, isRight)
-import Data.List (sortOn)
+import Data.List (sort, sortOn)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text, isInfixOf)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
@@ -48,8 +48,11 @@ import Database.Manager (
     CachePolicy (..),
     DatabaseManager (..),
     LoadedDatabase (..),
+    getDatabase,
     initDatabaseManager,
     loadDatabase,
+    processTraced,
+    unloadDatabase,
  )
 import Database.SystemModel (Traced (..), parseSystemModel, ruleText, takenProcesses, traceOf)
 import Database.Upload (DatabaseFormat (..))
@@ -67,6 +70,7 @@ import Types (
     ParameterDefinition (..),
     ProcessRef (..),
     Reading (..),
+    SimpleDatabase (..),
     StatedAmount (..),
     TechRole (..),
     TechnosphereFlow (..),
@@ -212,6 +216,28 @@ spec = around_ withScratchDataDir $ describe "Database.Edit.deriveDatabase" $ do
                                    , ("Whey", Just 75, "wet mass, exception: Dairy by its solids.")
                                    ]
 
+        it "names the parent's process each piece was cut from: the block, or the process itself when it is no block's" $
+            withParent $ \manager -> do
+                parent <- loadedDb manager parentName
+                let model = exceptionTaking "wet mass" (dairyActivity parent)
+                child <- deriveWith manager model
+                tracedTo model parent child
+                    `shouldReturn` [("Butter", ["Butter"]), ("Cheese", ["Cheese", "Whey"]), ("Whey", ["Cheese", "Whey"])]
+
+        it "gives one process's row of the sheet, nothing for a database read from its files, and says so when the parent is unloaded" $
+            withParent $ \manager -> do
+                parent <- loadedDb manager parentName
+                _ <- deriveWith manager (exceptionTaking "wet mass" (dairyActivity parent))
+                child <- maybe (fail "the child is not loaded") pure =<< getDatabase manager childName
+                rowOf manager child "Cheese" `shouldReturn` Right (Just (parentName, "Cheese", Just 25))
+                rowOf manager child "Pig" `shouldReturn` Right Nothing
+                sourceDb <- either (fail . show) (pure . fst) =<< loadDatabase manager source
+                fromFiles <- processTraced manager sourceDb (head (V.toList (dbProcessIdTable (ldDatabase sourceDb))))
+                either (const False) isNothing fromFiles `shouldBe` True
+                _ <- unloadDatabase manager parentName
+                unloaded <- rowOf manager child "Cheese"
+                unloaded `shouldSatisfy` either ("is not loaded" `isInfixOf`) (const False)
+
         it "traces a piece divided by the model's default key" $
             withParent $ \manager -> do
                 parent <- loadedDb manager parentName
@@ -317,6 +343,7 @@ spec = around_ withScratchDataDir $ describe "Database.Edit.deriveDatabase" $ do
                 child <- deriveWith manager model
                 -- The pig farm and the powder plant make one product each, at 100 %: nothing to trace.
                 traced model parent child `shouldReturn` [("Cheese", Just 100, "substitution: Whey replaces milk powder in pig feed, by its solids.")]
+                tracedTo model parent child `shouldReturn` [("Cheese", ["Cheese", "Whey"])]
 
         it "is still substituted after a restart" $
             withSource wheyCSV $ \manager -> do
@@ -487,6 +514,30 @@ traced text parent child = do
     model <- either (fail . show) pure (parseSystemModel text)
     onParent <- either (fail . show) pure (takenProcesses model parent)
     pure (sortOn (\(product, _, _) -> product) [(trProduct t, trShare t, ruleText (trRule t)) | t <- traceOf onParent parent child])
+
+{- | The parent's process each traced piece names, by product: the products
+that process makes in the parent, so a piece of a block names the whole block
+and a process no block holds names itself.
+-}
+tracedTo :: Text -> Database -> Database -> IO [(Text, [Text])]
+tracedTo text parent child = do
+    model <- either (fail . show) pure (parseSystemModel text)
+    onParent <- either (fail . show) pure (takenProcesses model parent)
+    let simple = toSimpleDatabase parent
+        productsOf act = sort [maybe "?" tfName (M.lookup (exchangeFlowId ex) (sdbTechFlows simple)) | ex <- exchanges act, exchangeIsProductOutput ex]
+    pure (sortOn fst [(trProduct t, maybe [] productsOf (M.lookup (trParent t) (sdbActivities simple))) | t <- traceOf onParent parent child])
+
+{- | The row of the sheet 'processTraced' gives for the child's process making
+this product: the parent it names, the product and the share.
+-}
+rowOf :: DatabaseManager -> LoadedDatabase -> Text -> IO (Either Text (Maybe (Text, Text, Maybe Double)))
+rowOf manager child product = do
+    let simple = toSimpleDatabase (ldDatabase child)
+        makes act = [() | ex <- exchanges act, exchangeIsReference ex, (tfName <$> M.lookup (exchangeFlowId ex) (sdbTechFlows simple)) == Just product]
+    key <- case [k | (k, act) <- M.toList (sdbActivities simple), not (null (makes act))] of
+        [k] -> pure k
+        keys -> fail ("the child makes " <> T.unpack product <> " in " <> show (length keys) <> " processes")
+    fmap (fmap (\(parent, t) -> (dcName parent, trProduct t, trShare t))) <$> processTraced manager child key
 
 loadedDb :: DatabaseManager -> Text -> IO Database
 loadedDb manager name = either (fail . show) (pure . ldDatabase . fst) =<< loadDatabase manager name
